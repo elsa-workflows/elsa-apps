@@ -48,7 +48,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           builder: ${{ steps.buildx.outputs.name }}
-          context: .
+          context: ./src/Elsa.Server
           file: ./src/Elsa.Server/Dockerfile
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: ${{ github.event_name != 'pull_request' }}
