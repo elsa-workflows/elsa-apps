@@ -18,7 +18,13 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "solution", "solution", "{19197A98-B95A-4D3B-A7CF-D5984618D8FF}"
 	ProjectSection(SolutionItems) = preProject
 		.gitignore = .gitignore
+		Directory.Packages.props = Directory.Packages.props
+		Directory.Build.props = Directory.Build.props
+		NuGet.Config = NuGet.Config
+		README.md = README.md
 	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Elsa.Server.Studio.BlazorWasm.Client", "src\Elsa.Server.Studio.BlazorWasm.Client\Elsa.Server.Studio.BlazorWasm.Client.csproj", "{D66E4114-E6A8-4672-8737-C7A472DDF3A1}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -49,6 +55,10 @@ Global
 		{24AB5A53-306E-4086-9C01-4E0222DEA639}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{24AB5A53-306E-4086-9C01-4E0222DEA639}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{24AB5A53-306E-4086-9C01-4E0222DEA639}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D66E4114-E6A8-4672-8737-C7A472DDF3A1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D66E4114-E6A8-4672-8737-C7A472DDF3A1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D66E4114-E6A8-4672-8737-C7A472DDF3A1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D66E4114-E6A8-4672-8737-C7A472DDF3A1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{071565DD-660C-406E-ADAE-ADE99A6BD24C} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
@@ -56,5 +66,6 @@ Global
 		{CC560B84-0BB9-48E8-B55D-C44B128CE7E7} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
 		{E891813B-CC89-4242-AD95-7EF0FBD93AD0} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
 		{24AB5A53-306E-4086-9C01-4E0222DEA639} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
+		{D66E4114-E6A8-4672-8737-C7A472DDF3A1} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
 	EndGlobalSection
 EndGlobal
