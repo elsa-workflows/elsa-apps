@@ -22,6 +22,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "solution", "solution", "{19
 		Directory.Build.props = Directory.Build.props
 		NuGet.Config = NuGet.Config
 		README.md = README.md
+		.dockerignore = .dockerignore
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Elsa.Server.Studio.BlazorWasm.Client", "src\Elsa.Server.Studio.BlazorWasm.Client\Elsa.Server.Studio.BlazorWasm.Client.csproj", "{D66E4114-E6A8-4672-8737-C7A472DDF3A1}"

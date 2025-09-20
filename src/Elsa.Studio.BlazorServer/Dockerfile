@@ -2,12 +2,19 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-# Copy project file and restore dependencies
-COPY ["Elsa.Studio.BlazorServer.csproj", "./"]
+# Copy project and config files
+COPY Directory.Build.props ../../Directory.Build.props
+COPY Directory.Packages.props ../../Directory.Packages.props
+COPY NuGet.Config ../../NuGet.Config
+COPY src/Elsa.Studio.BlazorServer/Elsa.Studio.BlazorServer.csproj ./
+
+# Restore dependencies
 RUN dotnet restore "Elsa.Studio.BlazorServer.csproj"
 
-# Copy source code and build
-COPY . .
+# Copy the rest of the source code
+COPY src/Elsa.Studio.BlazorServer/. ./
+
+# Build the project
 RUN dotnet build "Elsa.Studio.BlazorServer.csproj" -c Release -o /app/build
 
 # Publish stage

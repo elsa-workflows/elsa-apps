@@ -2,12 +2,19 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-# Copy project file and restore dependencies
-COPY ["Elsa.Server.csproj", "./"]
+# Copy project and config files
+COPY Directory.Build.props ../../Directory.Build.props
+COPY Directory.Packages.props ../../Directory.Packages.props
+COPY NuGet.Config ../../NuGet.Config
+COPY src/Elsa.Server/Elsa.Server.csproj ./
+
+# Restore dependencies
 RUN dotnet restore "Elsa.Server.csproj"
 
-# Copy source code and build
-COPY . .
+# Copy the rest of the source code
+COPY src/Elsa.Server/. ./
+
+# Build the project
 RUN dotnet build "Elsa.Server.csproj" -c Release -o /app/build
 
 # Publish stage
