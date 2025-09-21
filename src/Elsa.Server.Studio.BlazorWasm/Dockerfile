@@ -7,12 +7,17 @@ COPY Directory.Build.props ../../Directory.Build.props
 COPY Directory.Packages.props ../../Directory.Packages.props
 COPY NuGet.Config ../../NuGet.Config
 COPY src/Elsa.Server.Studio.BlazorWasm/Elsa.Server.Studio.BlazorWasm.csproj ./
+COPY src/Elsa.Server.Shared/Elsa.Server.Shared.csproj ../Elsa.Server.Shared/
 
 # Restore dependencies
 RUN dotnet restore "Elsa.Server.Studio.BlazorWasm.csproj"
 
+# Copy all project files before build (for multi-project references)
+COPY src/**/*.csproj ../
+
 # Copy the rest of the source code
 COPY src/Elsa.Server.Studio.BlazorWasm/. ./
+COPY src/Elsa.Server.Shared/. ../Elsa.Server.Shared/
 
 # Build the project
 RUN dotnet build "Elsa.Server.Studio.BlazorWasm.csproj" -c Release -o /app/build
