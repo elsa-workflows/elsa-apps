@@ -3,8 +3,6 @@
     <ItemGroup>
         <PackageReference Include="Elsa"/>
         <PackageReference Include="Elsa.CSharp"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore.Sqlite"/>
         <PackageReference Include="Elsa.Http"/>
         <PackageReference Include="Elsa.Identity"/>
         <PackageReference Include="Elsa.JavaScript"/>
@@ -14,8 +12,20 @@
     </ItemGroup>
 
     <ItemGroup>
+        <PackageReference Include="Elsa.Agents.Activities"/>
+        <PackageReference Include="Elsa.Agents.Api"/>
+        <PackageReference Include="Elsa.Agents.Core"/>
+        <PackageReference Include="Elsa.Agents.Persistence.EFCore.Sqlite"/>
+        <PackageReference Include="Elsa.Agents.Persistence.EFCore.SqlServer"/>
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="Microsoft.AspNetCore.OpenApi"/>
         <PackageReference Include="Swashbuckle.AspNetCore"/>
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\Elsa.Server.Shared\Elsa.Server.Shared.csproj" />
     </ItemGroup>
 
 </Project>

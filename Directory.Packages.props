@@ -14,7 +14,11 @@
         <PackageVersion Include="Elsa.Api.Client" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.CSharp" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.EntityFrameworkCore" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.EntityFrameworkCore.MySql" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.EntityFrameworkCore.Oracle" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.EntityFrameworkCore.PostgreSql" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.EntityFrameworkCore.Sqlite" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.EntityFrameworkCore.SqlServer" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Http" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Identity" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.JavaScript" Version="$(ElsaVersion)"/>

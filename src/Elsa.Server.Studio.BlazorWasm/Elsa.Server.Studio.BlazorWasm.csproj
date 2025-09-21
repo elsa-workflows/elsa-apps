@@ -28,6 +28,7 @@
     </ItemGroup>
 
     <ItemGroup>
+      <ProjectReference Include="..\Elsa.Server.Shared\Elsa.Server.Shared.csproj" />
       <ProjectReference Include="..\Elsa.Server.Studio.BlazorWasm.Client\Elsa.Server.Studio.BlazorWasm.Client.csproj" />
     </ItemGroup>
 

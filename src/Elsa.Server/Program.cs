@@ -1,7 +1,8 @@
-using Elsa.EntityFrameworkCore.Extensions;
+using Elsa.Agents;
 using Elsa.EntityFrameworkCore.Modules.Management;
 using Elsa.EntityFrameworkCore.Modules.Runtime;
 using Elsa.Extensions;
+using static Elsa.Server.Shared.DatabaseConfiguration;
 
 var builder = WebApplication.CreateBuilder(args);
 var services = builder.Services;
@@ -9,23 +10,24 @@ var configuration = builder.Configuration;
 
 services.AddElsa(elsa =>
 {
-    elsa.UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ef.UseSqlite()));
-    elsa.UseWorkflowRuntime(runtime => runtime.UseEntityFrameworkCore(ef => ef.UseSqlite()));
-    
-    elsa.UseIdentity(identity =>
-    {
-        identity.TokenOptions = options => configuration.Bind("Identity:Tokens", options); 
-        identity.UseAdminUserProvider();
-    });
-
-    elsa.UseDefaultAuthentication(auth => auth.UseAdminApiKey());
-    elsa.UseWorkflowsApi();
-    elsa.UseCSharp();
-    elsa.UseJavaScript(options => options.AllowClrAccess = true);
-    elsa.UseHttp(options => options.ConfigureHttpOptions = httpOptions => configuration.Bind("Http", httpOptions));
-    elsa.UseScheduling();
-    elsa.AddActivitiesFrom<Program>();
-    elsa.AddWorkflowsFrom<Program>();
+    elsa.UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
+        .UseWorkflowRuntime(runtime => runtime.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
+        .UseIdentity(identity =>
+        {
+            identity.TokenOptions = options => configuration.Bind("Identity:Tokens", options);
+            identity.UseAdminUserProvider();
+        })
+        .UseDefaultAuthentication(auth => auth.UseAdminApiKey())
+        .UseWorkflowsApi()
+        .UseCSharp()
+        .UseJavaScript(options => options.AllowClrAccess = true)
+        .UseHttp(options => options.ConfigureHttpOptions = httpOptions => configuration.Bind("Http", httpOptions))
+        .UseScheduling()
+        .UseAgentActivities()
+        .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
+        .UseAgentsApi()
+        .AddActivitiesFrom<Program>()
+        .AddWorkflowsFrom<Program>();
 });
 
 builder.Services.AddCors(cors => cors

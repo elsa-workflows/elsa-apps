@@ -42,4 +42,8 @@
       <Folder Include="wwwroot\" />
     </ItemGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\Elsa.Server.Shared\Elsa.Server.Shared.csproj" />
+    </ItemGroup>
+
 </Project>

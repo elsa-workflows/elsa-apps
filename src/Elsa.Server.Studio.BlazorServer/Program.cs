@@ -1,5 +1,4 @@
 using Elsa.Agents;
-using Elsa.EntityFrameworkCore.Extensions;
 using Elsa.EntityFrameworkCore.Modules.Management;
 using Elsa.EntityFrameworkCore.Modules.Runtime;
 using Elsa.Extensions;
@@ -17,6 +16,7 @@ using Elsa.Studio.Webhooks.Extensions;
 using Elsa.Studio.Workflows.Designer.Extensions;
 using Elsa.Studio.Workflows.Extensions;
 using Microsoft.AspNetCore.Mvc;
+using static Elsa.Server.Shared.DatabaseConfiguration;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseStaticWebAssets();
@@ -32,15 +32,15 @@ services
             identity.UseAdminUserProvider();
         })
         .UseDefaultAuthentication()
-        .UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ef.UseSqlite()))
-        .UseWorkflowRuntime(runtime => runtime.UseEntityFrameworkCore(ef => ef.UseSqlite()))
+        .UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
+        .UseWorkflowRuntime(runtime => runtime.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
         .UseScheduling()
         .UseJavaScript()
         .UseLiquid()
         .UseHttp(http => http.ConfigureHttpOptions = options => configuration.GetSection("Http").Bind(options))
         .UseWorkflowsApi()
         .UseAgentActivities()
-        .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ef.UseSqlite()))
+        .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
         .UseAgentsApi()
         .AddActivitiesFrom<Program>()
         .AddWorkflowsFrom<Program>()
