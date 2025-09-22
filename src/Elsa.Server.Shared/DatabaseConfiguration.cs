@@ -38,7 +38,7 @@ public static class DatabaseConfiguration
         switch (dbProvider)
         {
             case "Sqlite":
-                ef.UseSqlite(migrationsAssembly ?? typeof(SqliteProvidersExtensions).Assembly,  connectionString);
+                ef.UseSqlite(migrationsAssembly ?? typeof(SqliteProvidersExtensions).Assembly, connectionString);
                 break;
             case "SqlServer":
                 ef.UseSqlServer(migrationsAssembly ?? typeof(SqlServerProvidersExtensions).Assembly, connectionString);
