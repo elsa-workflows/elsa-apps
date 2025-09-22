@@ -36,8 +36,21 @@ Each project includes a `Dockerfile`. You can build and run them as follows:
 ```bash
 # Example: build and run the Elsa Server image
 docker build -t elsa-server ./src/Elsa.Server
-docker run -d -p 5000:80 --name elsa-server elsa-server
+docker run -d -p 5000:8080 --name elsa-server elsa-server \
+       -e HTTP__BASEURL=http://localhost:5000 \
+       -e DATABASEPROVIDER=SqlServer \
+       -e CONNECTIONSTRINGS__DEFAULT="Server=localhost;Database=Elsa;User Id=sa;Password=!" 
 ````
+
+## Using Docker Images from Docker Hub
+
+```bash
+# Example: run the Elsa Server image
+docker run --rm -p 5000:8080 elsaworkflows/elsa-server-blazor-server-app:latest \
+       -e HTTP__BASEURL=http://localhost:5000 \
+       -e DATABASEPROVIDER=SqlServer \
+       -e CONNECTIONSTRINGS__DEFAULT="Server=localhost;Database=Elsa;User Id=sa;Password=!"
+```
 
 ## License
 
