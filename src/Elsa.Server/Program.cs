@@ -24,7 +24,7 @@ services.AddElsa(elsa =>
         .UseHttp(options => options.ConfigureHttpOptions = httpOptions => configuration.Bind("Http", httpOptions))
         .UseScheduling()
         .UseAgentActivities()
-        .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
+        .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCoreForAgents(ef, configuration)))
         .UseAgentsApi()
         .AddActivitiesFrom<Program>()
         .AddWorkflowsFrom<Program>();

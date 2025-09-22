@@ -48,6 +48,8 @@
         <PackageVersion Include="Elsa.Agents.Core" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Agents.Persistence.EFCore.Sqlite" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Agents.Persistence.EFCore.SqlServer" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Agents.Persistence.EFCore.MySql" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Agents.Persistence.EFCore.PostgreSql" Version="$(ElsaExtensionsVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
