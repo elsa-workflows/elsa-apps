@@ -26,7 +26,7 @@ RUN dotnet publish "Elsa.Server.Studio.BlazorServer.csproj" -c Release -o /app/p
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 WORKDIR /app
-EXPOSE 80
+EXPOSE 8080
 COPY --from=publish /app/publish .
 
 ENTRYPOINT ["dotnet", "Elsa.Server.Studio.BlazorServer.dll"]
