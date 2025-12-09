@@ -4,32 +4,31 @@
         <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     </PropertyGroup>
     <PropertyGroup>
-        <ElsaVersion>3.5.0</ElsaVersion>
-        <ElsaStudioVersion>3.5.0</ElsaStudioVersion>
-        <ElsaExtensionsVersion>3.5.0</ElsaExtensionsVersion>
-        <MicrosoftVersion>9.0.9</MicrosoftVersion>
+        <ElsaVersion>3.6.0-preview.4007</ElsaVersion>
+        <ElsaStudioVersion>3.6.0-preview.1286</ElsaStudioVersion>
+        <ElsaExtensionsVersion>3.6.0-preview.177</ElsaExtensionsVersion>
+        <MicrosoftVersion>10.0.1</MicrosoftVersion>
     </PropertyGroup>
     <ItemGroup>
         <PackageVersion Include="Elsa" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Api.Client" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.CSharp" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.EntityFrameworkCore" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.EntityFrameworkCore.MySql" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.EntityFrameworkCore.Oracle" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.EntityFrameworkCore.PostgreSql" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.EntityFrameworkCore.Sqlite" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.EntityFrameworkCore.SqlServer" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Expressions.CSharp" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Persistence.EFCore" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Persistence.EFCore.MySql" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Persistence.EFCore.Oracle" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Persistence.EFCore.PostgreSql" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Persistence.EFCore.Sqlite" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Persistence.EFCore.SqlServer" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Http" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Identity" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.JavaScript" Version="$(ElsaVersion)"/>
-        <PackageVersion Include="Elsa.Liquid" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Expressions.JavaScript" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Expressions.Liquid" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Scheduling" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Workflows.Api" Version="$(ElsaVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
         <PackageVersion Include="Elsa.Studio" Version="$(ElsaStudioVersion)"/>
-        <PackageVersion Include="Elsa.Studio.Agents" Version="$(ElsaStudioVersion)"/>
         <PackageVersion Include="Elsa.Studio.Core" Version="$(ElsaStudioVersion)"/>
         <PackageVersion Include="Elsa.Studio.Core.BlazorServer" Version="$(ElsaStudioVersion)"/>
         <PackageVersion Include="Elsa.Studio.Core.BlazorWasm" Version="$(ElsaStudioVersion)"/>
@@ -38,8 +37,6 @@
         <PackageVersion Include="Elsa.Studio.Localization.BlazorWasm" Version="$(ElsaStudioVersion)"/>
         <PackageVersion Include="Elsa.Studio.Login.BlazorServer" Version="$(ElsaStudioVersion)"/>
         <PackageVersion Include="Elsa.Studio.Login.BlazorWasm" Version="$(ElsaStudioVersion)"/>
-        <PackageVersion Include="Elsa.Studio.Webhooks" Version="$(ElsaStudioVersion)"/>
-        <PackageVersion Include="Elsa.Studio.WorkflowContexts" Version="$(ElsaStudioVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -50,6 +47,12 @@
         <PackageVersion Include="Elsa.Agents.Persistence.EFCore.SqlServer" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Agents.Persistence.EFCore.MySql" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Agents.Persistence.EFCore.PostgreSql" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Studio.Agents" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Studio.Webhooks" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Studio.WorkflowContexts" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Logging" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Logging.Core" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Logging.Console" Version="$(ElsaExtensionsVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -57,6 +60,6 @@
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="$(MicrosoftVersion)"/>
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="$(MicrosoftVersion)" PrivateAssets="all"/>
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="$(MicrosoftVersion)"/>
-        <PackageVersion Include="Swashbuckle.AspNetCore" Version="9.0.4"/>
+        <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.0.1"/>
     </ItemGroup>
 </Project>

@@ -1,6 +1,6 @@
 ﻿using System.Reflection;
-using Elsa.EntityFrameworkCore;
-using Elsa.EntityFrameworkCore.Extensions;
+using Elsa.Persistence.EFCore;
+using Elsa.Persistence.EFCore.Extensions;
 using Microsoft.Extensions.Configuration;
 
 namespace Elsa.Server.Shared;

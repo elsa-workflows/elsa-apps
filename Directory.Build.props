@@ -5,7 +5,7 @@
         <PackageProjectUrl>https://github.com/elsa-workflows/elsa-apps</PackageProjectUrl>
         <RepositoryUrl>https://github.com/elsa-workflows/elsa-apps</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <LangVersion>latest</LangVersion>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>

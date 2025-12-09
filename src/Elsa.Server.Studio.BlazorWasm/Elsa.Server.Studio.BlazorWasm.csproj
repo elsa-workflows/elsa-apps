@@ -2,13 +2,13 @@
 
     <ItemGroup>
         <PackageReference Include="Elsa"/>
-        <PackageReference Include="Elsa.CSharp"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore.Sqlite"/>
+        <PackageReference Include="Elsa.Expressions.CSharp"/>
+        <PackageReference Include="Elsa.Persistence.EFCore"/>
+        <PackageReference Include="Elsa.Persistence.EFCore.Sqlite"/>
         <PackageReference Include="Elsa.Http"/>
         <PackageReference Include="Elsa.Identity"/>
-        <PackageReference Include="Elsa.JavaScript"/>
-        <PackageReference Include="Elsa.Liquid"/>
+        <PackageReference Include="Elsa.Expressions.JavaScript"/>
+        <PackageReference Include="Elsa.Expressions.Liquid"/>
         <PackageReference Include="Elsa.Scheduling"/>
         <PackageReference Include="Elsa.Workflows.Api"/>
     </ItemGroup>

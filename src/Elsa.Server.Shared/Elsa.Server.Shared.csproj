@@ -5,12 +5,12 @@
         <PackageReference Include="Elsa.Agents.Persistence.EFCore.SqlServer" />
         <PackageReference Include="Elsa.Agents.Persistence.EFCore.MySql" />
         <PackageReference Include="Elsa.Agents.Persistence.EFCore.PostgreSql" />
-        <PackageReference Include="Elsa.EntityFrameworkCore"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore.MySql"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore.Oracle"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore.PostgreSql"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore.Sqlite"/>
-        <PackageReference Include="Elsa.EntityFrameworkCore.SqlServer"/>
+        <PackageReference Include="Elsa.Persistence.EFCore"/>
+        <PackageReference Include="Elsa.Persistence.EFCore.MySql"/>
+        <PackageReference Include="Elsa.Persistence.EFCore.Oracle"/>
+        <PackageReference Include="Elsa.Persistence.EFCore.PostgreSql"/>
+        <PackageReference Include="Elsa.Persistence.EFCore.Sqlite"/>
+        <PackageReference Include="Elsa.Persistence.EFCore.SqlServer"/>
     </ItemGroup>
 
 </Project>

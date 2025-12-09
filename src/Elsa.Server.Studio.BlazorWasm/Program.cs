@@ -1,7 +1,7 @@
 using Elsa.Agents;
-using Elsa.EntityFrameworkCore.Modules.Management;
-using Elsa.EntityFrameworkCore.Modules.Runtime;
 using Elsa.Extensions;
+using Elsa.Persistence.EFCore.Modules.Management;
+using Elsa.Persistence.EFCore.Modules.Runtime;
 using Microsoft.AspNetCore.StaticFiles;
 using static Elsa.Server.Shared.DatabaseConfiguration;
 
