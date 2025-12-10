@@ -11,6 +11,8 @@
         <PackageReference Include="Elsa.Expressions.Liquid"/>
         <PackageReference Include="Elsa.Scheduling"/>
         <PackageReference Include="Elsa.Workflows.Api"/>
+        <PackageReference Include="Elsa.Workflows.Runtime"/>
+        <PackageReference Include="Elsa.Workflows.Runtime.Distributed"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -31,6 +33,9 @@
         <PackageReference Include="Elsa.Agents.Core"/>
         <PackageReference Include="Elsa.Agents.Persistence.EFCore.Sqlite"/>
         <PackageReference Include="Elsa.Agents.Persistence.EFCore.SqlServer"/>
+        <PackageReference Include="Elsa.Logging"/>
+        <PackageReference Include="Elsa.Logging.Console"/>
+        <PackageReference Include="Elsa.Logging.Serilog"/>
     </ItemGroup>
 
     <ItemGroup>

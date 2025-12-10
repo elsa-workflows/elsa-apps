@@ -1,7 +1,10 @@
 using Elsa.Agents;
 using Elsa.Extensions;
+using Elsa.Identity;
+using Elsa.Logging.Extensions;
 using Elsa.Persistence.EFCore.Modules.Management;
 using Elsa.Persistence.EFCore.Modules.Runtime;
+using Elsa.Requirements;
 using Elsa.Studio.Core.BlazorServer.Extensions;
 using Elsa.Studio.Dashboard.Extensions;
 using Elsa.Studio.Extensions;
@@ -15,6 +18,7 @@ using Elsa.Studio.Shell.Extensions;
 using Elsa.Studio.Webhooks.Extensions;
 using Elsa.Studio.Workflows.Designer.Extensions;
 using Elsa.Studio.Workflows.Extensions;
+using Elsa.Workflows.Runtime.Distributed.Extensions;
 using Microsoft.AspNetCore.Mvc;
 using static Elsa.Server.Shared.DatabaseConfiguration;
 
@@ -33,12 +37,17 @@ services
         })
         .UseDefaultAuthentication()
         .UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
-        .UseWorkflowRuntime(runtime => runtime.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
+        .UseWorkflowRuntime(runtime =>
+        {
+            runtime.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration));
+            runtime.UseDistributedRuntime();
+        })
         .UseScheduling()
         .UseJavaScript()
         .UseLiquid()
         .UseHttp(http => http.ConfigureHttpOptions = options => configuration.GetSection("Http").Bind(options))
         .UseWorkflowsApi()
+        .UseLoggingFramework()
         .UseAgentActivities()
         .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCoreForAgents(ef, configuration)))
         .UseAgentsApi()
@@ -46,6 +55,7 @@ services
         .AddWorkflowsFrom<Program>()
     );
 
+//services.AddAuthorization(options => options.AddPolicy(IdentityPolicyNames.SecurityRoot, policy => policy.AddRequirements(new LocalHostRequirement())));
 services.AddCors(cors => cors.AddDefaultPolicy(policy => policy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin().WithExposedHeaders("*")));
 services.AddRazorPages(options => options.Conventions.ConfigureFilter(new IgnoreAntiforgeryTokenAttribute()));
 services.AddServerSideBlazor();
@@ -60,6 +70,17 @@ services.AddRazorComponents().AddInteractiveServerComponents(options =>
 {
     options.RootComponents.RegisterCustomElsaStudioElements();
     options.RootComponents.MaxJSRootComponents = 1000;
+    options.MaxBufferedUnacknowledgedRenderBatches = 10;
+});
+
+services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 5 * 1024 * 1024; // 5 MB
+});
+
+services.AddSignalR(options =>
+{
+    options.MaximumReceiveMessageSize = 5 * 1024 * 1024; // 5 MB
 });
 services.AddCore();
 services.AddShell();

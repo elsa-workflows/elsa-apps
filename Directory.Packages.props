@@ -4,9 +4,9 @@
         <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     </PropertyGroup>
     <PropertyGroup>
-        <ElsaVersion>3.6.0-preview.4007</ElsaVersion>
-        <ElsaStudioVersion>3.6.0-preview.1286</ElsaStudioVersion>
-        <ElsaExtensionsVersion>3.6.0-preview.177</ElsaExtensionsVersion>
+        <ElsaVersion>3.6.0-preview.4036</ElsaVersion>
+        <ElsaStudioVersion>3.6.0-preview.1293</ElsaStudioVersion>
+        <ElsaExtensionsVersion>3.6.0-preview.182</ElsaExtensionsVersion>
         <MicrosoftVersion>10.0.1</MicrosoftVersion>
     </PropertyGroup>
     <ItemGroup>
@@ -25,6 +25,8 @@
         <PackageVersion Include="Elsa.Expressions.Liquid" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Scheduling" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Workflows.Api" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Workflows.Runtime" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Workflows.Runtime.Distributed" Version="$(ElsaVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
@@ -53,6 +55,7 @@
         <PackageVersion Include="Elsa.Logging" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Logging.Core" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Logging.Console" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Logging.Serilog" Version="$(ElsaExtensionsVersion)"/>
     </ItemGroup>
 
     <ItemGroup>
