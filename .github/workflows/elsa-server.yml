@@ -28,15 +28,11 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # list of Docker images to use as base name for tags
           images: |
             elsaworkflows/elsa-server-app
-          flavor: |
-            major=3.6.0
-          # generate Docker tags based on the following events/attributes
           tags: |
-            {{ .Flavor.major }}
-            {{ printf \"%s-sha-%s\" .Flavor.major .ShortSHA }}
+            type=raw,value=3.6.0
+            type=sha,prefix=3.6.0-sha-,format=short
 
       - name: Login to DockerHub
         if: github.event_name != 'pull_request'
