@@ -31,10 +31,11 @@ jobs:
           images: |
             elsaworkflows/elsa-server-app
           flavor: |
-            latest=true
+            major=3.6.0
           # generate Docker tags based on the following events/attributes
           tags: |
-            type=sha
+            {{ .Flavor.major }}
+            {{ printf "%s-sha-%s" .Flavor.major .ShortSHA }}
 
       - name: Login to DockerHub
         if: github.event_name != 'pull_request'
