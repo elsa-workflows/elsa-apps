@@ -36,7 +36,7 @@ jobs:
           # generate Docker tags based on the following events/attributes
           tags: |
             {{ .Flavor.major }}
-            {{ printf "%s-sha-%s" .Flavor.major .ShortSHA }}
+            {{ printf \"%s-sha-%s\" .Flavor.major .ShortSHA }}
 
       - name: Login to DockerHub
         if: github.event_name != 'pull_request'
