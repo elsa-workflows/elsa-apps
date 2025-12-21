@@ -15,7 +15,7 @@ using Elsa.Studio.Login.Extensions;
 using Elsa.Studio.Login.HttpMessageHandlers;
 using Elsa.Studio.Models;
 using Elsa.Studio.Shell.Extensions;
-using Elsa.Studio.Webhooks.Extensions;
+using Elsa.Studio.Http.Webhooks.Extensions;
 using Elsa.Studio.Workflows.Designer.Extensions;
 using Elsa.Studio.Workflows.Extensions;
 using Elsa.Workflows.Runtime.Distributed.Extensions;

@@ -7,7 +7,7 @@
         <PackageReference Include="Elsa.Studio.Localization.BlazorWasm"/>
         <PackageReference Include="Elsa.Studio.Core.BlazorWasm"/>
         <PackageReference Include="Elsa.Studio.Login.BlazorWasm"/>
-        <PackageReference Include="Elsa.Studio.Webhooks"/>
+        <PackageReference Include="Elsa.Studio.Http.Webhooks"/>
         <PackageReference Include="Elsa.Studio.WorkflowContexts"/>
     </ItemGroup>
 

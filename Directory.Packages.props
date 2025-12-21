@@ -4,9 +4,9 @@
         <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     </PropertyGroup>
     <PropertyGroup>
-        <ElsaVersion>3.6.0-preview.4068</ElsaVersion>
-        <ElsaStudioVersion>3.6.0-preview.1299</ElsaStudioVersion>
-        <ElsaExtensionsVersion>3.6.0-preview.194</ElsaExtensionsVersion>
+        <ElsaVersion>3.6.0-rc1</ElsaVersion>
+        <ElsaStudioVersion>3.6.0-rc1</ElsaStudioVersion>
+        <ElsaExtensionsVersion>3.6.0-rc1</ElsaExtensionsVersion>
         <MicrosoftVersion>10.0.1</MicrosoftVersion>
     </PropertyGroup>
     <ItemGroup>
@@ -50,7 +50,7 @@
         <PackageVersion Include="Elsa.Agents.Persistence.EFCore.MySql" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Agents.Persistence.EFCore.PostgreSql" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Studio.Agents" Version="$(ElsaExtensionsVersion)"/>
-        <PackageVersion Include="Elsa.Studio.Webhooks" Version="$(ElsaExtensionsVersion)"/>
+        <PackageVersion Include="Elsa.Studio.Http.Webhooks" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Studio.WorkflowContexts" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Logging" Version="$(ElsaExtensionsVersion)"/>
         <PackageVersion Include="Elsa.Logging.Core" Version="$(ElsaExtensionsVersion)"/>
@@ -63,6 +63,6 @@
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="$(MicrosoftVersion)"/>
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="$(MicrosoftVersion)" PrivateAssets="all"/>
         <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="$(MicrosoftVersion)"/>
-        <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.0.1"/>
+        <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.1.0"/>
     </ItemGroup>
 </Project>
