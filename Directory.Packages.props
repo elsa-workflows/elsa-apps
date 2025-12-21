@@ -6,7 +6,7 @@
     <PropertyGroup>
         <ElsaVersion>3.6.0-rc1</ElsaVersion>
         <ElsaStudioVersion>3.6.0-rc1</ElsaStudioVersion>
-        <ElsaExtensionsVersion>3.6.0-rc1</ElsaExtensionsVersion>
+        <ElsaExtensionsVersion>3.6.0-preview.213</ElsaExtensionsVersion>
         <MicrosoftVersion>10.0.1</MicrosoftVersion>
     </PropertyGroup>
     <ItemGroup>

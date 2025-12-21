@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.JavaScript;
 using Elsa.Studio.Contracts;
 using Elsa.Studio.Core.BlazorWasm.Extensions;
 using Elsa.Studio.Dashboard.Extensions;
@@ -17,7 +18,7 @@ using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
-var configuration = builder.Configuration;
+var backendUrl = JSHost.GlobalThis.GetPropertyAsJSObject("elsaConfig")?.GetPropertyAsString("backendUrl") ?? builder.Configuration.GetValue<string>("Backend:Url")!;
 
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
@@ -25,7 +26,10 @@ builder.RootComponents.RegisterCustomElsaStudioElements();
 
 var backendApiConfig = new BackendApiConfig
 {
-    ConfigureBackendOptions = options => configuration.GetSection("Backend").Bind(options),
+    ConfigureBackendOptions = options =>
+    {
+        options.Url = new(backendUrl);
+    },
     ConfigureHttpClientBuilder = options =>
     {
         options.AuthenticationHandler = typeof(AuthenticatingApiHttpMessageHandler);
