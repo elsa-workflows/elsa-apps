@@ -6,7 +6,7 @@ WORKDIR /src
 COPY Directory.Build.props ../../Directory.Build.props
 COPY Directory.Packages.props ../../Directory.Packages.props
 COPY NuGet.Config ../../NuGet.Config
-COPY src/Elsa.Studio.BlazorWasm/Elsa.Server.Studio.BlazorWasm.csproj ./
+COPY src/Elsa.Studio.BlazorWasm/Elsa.Studio.BlazorWasm.csproj ./
 
 # Restore dependencies
 RUN dotnet restore "Elsa.Studio.BlazorWasm.csproj"
