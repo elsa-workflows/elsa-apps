@@ -31,8 +31,8 @@ jobs:
           images: |
             elsaworkflows/elsa-server-studio-blazor-wasm-app
           tags: |
-            type=raw,value=3.6.0
-            type=sha,prefix=3.6.0-sha-,format=short
+            type=raw,value=3.6.1
+            type=sha,prefix=3.6.1-sha-,format=short
 
       - name: Login to DockerHub
         if: github.event_name != 'pull_request'
