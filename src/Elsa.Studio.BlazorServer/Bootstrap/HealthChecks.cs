@@ -9,9 +9,9 @@ namespace Elsa.Studio.BlazorServer.Bootstrap
     {
         public static IServiceCollection ConfigureHealthChecks(this IServiceCollection services, IConfiguration configuration)
         {
-            var healthCheckOptions = configuration.GetOptionsOrDefault<HealthCheckOptions>(SettingKeys.HealthChecks);
+            var healthCheckOptions = configuration.GetOptions<HealthCheckOptions>(SettingKeys.HealthChecks);
 
-            if (healthCheckOptions is not null && !healthCheckOptions.Disabled)
+            if (!healthCheckOptions.Disabled)
                 services.AddHealthChecks();
 
             return services;
@@ -19,28 +19,23 @@ namespace Elsa.Studio.BlazorServer.Bootstrap
 
         public static void ConfigureHealthCheckEndpoints(this WebApplication app)
         {
-            var healthCheckOptions = app.Configuration.GetOptionsOrDefault<HealthCheckOptions>(SettingKeys.HealthChecks);
+            var healthCheckOptions = app.Configuration.GetOptions<HealthCheckOptions>(SettingKeys.HealthChecks);
 
-            if (healthCheckOptions is null || healthCheckOptions.Disabled)
+            if (healthCheckOptions.Disabled)
                 return;
 
-            app.MapHealthChecks("/health/ready", new()
+            foreach(var endpoint in healthCheckOptions.Endpoints)
             {
-                Predicate = check => check.Tags.Contains("ready"),
-                ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
-            });
+                var route = endpoint.Endpoint.StartsWith('/') 
+                    ? endpoint.Endpoint 
+                    : "/" + endpoint.Endpoint;
 
-            app.MapHealthChecks("/health/live", new()
-            {
-                Predicate = check => check.Tags.Contains("live"),
-                ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
-            });
-
-            app.MapHealthChecks("/health/start", new()
-            {
-                Predicate = check => check.Tags.Contains("start"),
-                ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
-            });
+                app.MapHealthChecks(route, new()
+                {
+                    Predicate = check => check.Tags.Contains(endpoint.Tag),
+                    ResponseWriter = UIResponseWriter.WriteHealthCheckUIResponse
+                });
+            }            
         }
     }
 }
