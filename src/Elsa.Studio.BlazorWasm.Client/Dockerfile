@@ -1,5 +1,5 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Copy project and config files
@@ -28,4 +28,3 @@ FROM nginx:alpine AS final
 COPY src/Elsa.Studio.BlazorWasm.Client/nginx.conf /etc/nginx/nginx.conf
 COPY --from=publish /app/publish/wwwroot /usr/share/nginx/html
 EXPOSE 80
-
