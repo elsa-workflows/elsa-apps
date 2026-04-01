@@ -1,4 +1,6 @@
-﻿namespace Elsa.Studio.BlazorServer.Helpers
+﻿using Microsoft.Extensions.Configuration;
+
+namespace Elsa.Studio.BlazorServer.Helpers
 {
     public static class OptionsHelper
     {

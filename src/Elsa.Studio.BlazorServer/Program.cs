@@ -9,7 +9,6 @@ var services = builder.Services;
 var configuration = builder.Configuration;
 
 services.SetupCore(configuration);
-
 var backendApiConfig = services.ConfigureBackend(configuration);
 services.AddModules(configuration, backendApiConfig);
 services.ConfigureLogin(configuration);

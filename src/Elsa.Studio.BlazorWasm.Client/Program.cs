@@ -1,48 +1,25 @@
-using System.Runtime.InteropServices.JavaScript;
+using Elsa.Studio.BlazorWasm.Client.Bootstrap;
 using Elsa.Studio.Contracts;
-using Elsa.Studio.Core.BlazorWasm.Extensions;
-using Elsa.Studio.Dashboard.Extensions;
-using Elsa.Studio.Extensions;
 using Elsa.Studio.Localization.Time;
 using Elsa.Studio.Localization.Time.Providers;
-using Elsa.Studio.Login.BlazorWasm.Extensions;
-using Elsa.Studio.Login.Extensions;
-using Elsa.Studio.Login.HttpMessageHandlers;
-using Elsa.Studio.Models;
-using Elsa.Studio.Shell;
-using Elsa.Studio.Shell.Extensions;
-using Elsa.Studio.WorkflowContexts.Extensions;
-using Elsa.Studio.Workflows.Designer.Extensions;
-using Elsa.Studio.Workflows.Extensions;
-using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
-var backendUrl = JSHost.GlobalThis.GetPropertyAsJSObject("elsaConfig")?.GetPropertyAsString("backendUrl") ?? builder.Configuration.GetValue<string>("Backend:Url")!;
+var services = builder.Services;
+var configuration = builder.Configuration;
 
-builder.RootComponents.Add<App>("#app");
-builder.RootComponents.Add<HeadOutlet>("head::after");
-builder.RootComponents.RegisterCustomElsaStudioElements();
+builder.SetupCore();
 
-var backendApiConfig = new BackendApiConfig
-{
-    ConfigureBackendOptions = options => options.Url = new(backendUrl),
-    ConfigureHttpClientBuilder = options =>
-    {
-        options.AuthenticationHandler = typeof(AuthenticatingApiHttpMessageHandler);
-    }
-};
+var backendApiConfig = services.ConfigureBackend(configuration);
+services.AddModules(configuration, backendApiConfig);
+services.ConfigureLogin(configuration);
+services.ConfigureDiagnostics(configuration);
 
-builder.Services.AddCore();
-builder.Services.AddShell();
-builder.Services.AddRemoteBackend(backendApiConfig);
-builder.Services.AddLoginModule().UseElsaIdentity();
-builder.Services.AddDashboardModule();
-builder.Services.AddWorkflowsModule();
-builder.Services.AddWorkflowContextsModule();
 builder.Services.AddScoped<ITimeZoneProvider, LocalTimeZoneProvider>();
 
 var app = builder.Build();
+
 var startupTaskRunner = app.Services.GetRequiredService<IStartupTaskRunner>();
 await startupTaskRunner.RunStartupTasksAsync();
+
 await app.RunAsync();
