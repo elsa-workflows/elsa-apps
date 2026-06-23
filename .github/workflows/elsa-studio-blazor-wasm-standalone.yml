@@ -1,4 +1,4 @@
-name: Elsa Studio (Blazor WASM) App Docker Image
+name: Elsa Studio (Blazor WASM Standalone) App Docker Image
 on:
   workflow_dispatch:
   push:
@@ -29,7 +29,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            elsaworkflows/elsa-studio-blazor-wasm-app
+            elsaworkflows/elsa-studio-blazor-wasm-standalone-app
           tags: |
             type=raw,value=3.6.1
             type=sha,prefix=3.6.1-sha-,format=short
@@ -47,7 +47,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
-          file: ./src/Elsa.Studio.BlazorWasm/Dockerfile
+          file: ./src/Elsa.Studio.BlazorWasm.Client/Dockerfile
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}

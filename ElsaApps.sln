@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.0.31903.59
+# Visual Studio Version 18
+VisualStudioVersion = 18.2.11415.280
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}"
 	ProjectSection(SolutionItems) = preProject
@@ -20,12 +20,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Elsa.Server.Studio.BlazorSe
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "solution", "solution", "{19197A98-B95A-4D3B-A7CF-D5984618D8FF}"
 	ProjectSection(SolutionItems) = preProject
+		.dockerignore = .dockerignore
 		.gitignore = .gitignore
-		Directory.Packages.props = Directory.Packages.props
 		Directory.Build.props = Directory.Build.props
+		Directory.Packages.props = Directory.Packages.props
 		NuGet.Config = NuGet.Config
 		README.md = README.md
-		.dockerignore = .dockerignore
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Elsa.Server.Studio.BlazorWasm.Client", "src\Elsa.Server.Studio.BlazorWasm.Client\Elsa.Server.Studio.BlazorWasm.Client.csproj", "{D66E4114-E6A8-4672-8737-C7A472DDF3A1}"
@@ -43,13 +43,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Elsa.Server.Shared", "src\E
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Elsa.Studio.BlazorWasm", "src\Elsa.Studio.BlazorWasm\Elsa.Studio.BlazorWasm.csproj", "{618EDD3C-C57E-4BD7-9E0F-76BC53F09685}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shared", "src\Shared\Shared.csproj", "{C164DE46-8179-4DBE-8AB7-5EE356D9BF13}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
 		Release|Any CPU = Release|Any CPU
-	EndGlobalSection
-	GlobalSection(SolutionProperties) = preSolution
-		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{071565DD-660C-406E-ADAE-ADE99A6BD24C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
@@ -84,6 +83,13 @@ Global
 		{618EDD3C-C57E-4BD7-9E0F-76BC53F09685}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{618EDD3C-C57E-4BD7-9E0F-76BC53F09685}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{618EDD3C-C57E-4BD7-9E0F-76BC53F09685}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C164DE46-8179-4DBE-8AB7-5EE356D9BF13}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C164DE46-8179-4DBE-8AB7-5EE356D9BF13}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C164DE46-8179-4DBE-8AB7-5EE356D9BF13}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C164DE46-8179-4DBE-8AB7-5EE356D9BF13}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{071565DD-660C-406E-ADAE-ADE99A6BD24C} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
@@ -94,5 +100,9 @@ Global
 		{D66E4114-E6A8-4672-8737-C7A472DDF3A1} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
 		{24FCA92A-1D69-42FB-84B1-BD2AF1150213} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
 		{618EDD3C-C57E-4BD7-9E0F-76BC53F09685} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
+		{C164DE46-8179-4DBE-8AB7-5EE356D9BF13} = {6A2E843D-3C2D-4938-9BE3-EFF81343B5BA}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {9DCFFC5F-1978-498E-BEFA-6E17F62AAC81}
 	EndGlobalSection
 EndGlobal
