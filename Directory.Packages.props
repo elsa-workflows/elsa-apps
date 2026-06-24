@@ -4,9 +4,9 @@
         <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     </PropertyGroup>
     <PropertyGroup>
-        <ElsaVersion>3.6.1-preview.4474</ElsaVersion>
-        <ElsaStudioVersion>3.6.1-preview.1546</ElsaStudioVersion>
-        <ElsaExtensionsVersion>3.6.0</ElsaExtensionsVersion>
+        <ElsaVersion>3.6.3</ElsaVersion>
+        <ElsaStudioVersion>3.6.3</ElsaStudioVersion>
+        <ElsaExtensionsVersion>3.6.3</ElsaExtensionsVersion>
         <MicrosoftVersion>10.0.3</MicrosoftVersion>
     </PropertyGroup>
     <ItemGroup>
