@@ -1,6 +1,9 @@
+using Elsa.Studio.BlazorServer.Bootstrap;
+using Elsa.Studio.BlazorServer.Services;
 using Elsa.Studio.Localization.Time;
 using Elsa.Studio.Localization.Time.Providers;
-using Elsa.Studio.BlazorServer.Bootstrap;
+using Elsa.Studio.Login.Contracts;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseStaticWebAssets();
@@ -12,6 +15,7 @@ services.SetupCore(configuration);
 var backendApiConfig = services.ConfigureBackend(configuration);
 services.AddModules(configuration, backendApiConfig);
 services.ConfigureLogin(configuration);
+builder.Services.Replace(ServiceDescriptor.Scoped<IJwtAccessor, SafeBlazorServerJwtAccessor>());
 services.ConfigureDiagnostics(configuration);
 services.ConfigureHealthChecks(configuration);
 
