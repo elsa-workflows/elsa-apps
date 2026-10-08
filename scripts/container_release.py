@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
+import io
 import json
 import os
 import re
@@ -15,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -212,6 +215,27 @@ def validate_publication(event: str, version: str, publish: bool, ref: str, rele
     raise ReleaseError(f"Unsupported workflow event: {event!r}")
 
 
+def validate_supersede_request(
+    run_id: str,
+    event: str,
+    version: str,
+    publish: bool,
+    ref: str,
+    selected_images: list[dict[str, Any]],
+    package_versions: dict[str, str],
+) -> None:
+    if not run_id:
+        return
+    if not re.fullmatch(r"[1-9][0-9]*", run_id):
+        raise ReleaseError("supersede_run_id must be a positive GitHub Actions run id")
+    if event != "workflow_dispatch" or not publish or ref != "refs/heads/main":
+        raise ReleaseError("A correction requires a publishing workflow_dispatch from main")
+    if selected_images != list(IMAGES):
+        raise ReleaseError("A correction requires all six application image profiles")
+    if any(package_versions[family] != version for family in ("core", "studio", "extensions")):
+        raise ReleaseError("A correction requires all package versions to equal the release version")
+
+
 def resolve_run(args: argparse.Namespace) -> dict[str, Any]:
     packages = read_package_versions(Path(args.packages))
     event = args.event
@@ -260,16 +284,29 @@ def resolve_run(args: argparse.Namespace) -> dict[str, Any]:
             if not is_elsa_version(package_version):
                 raise ReleaseError(f"Unsupported {family} package version: {package_version!r}")
 
+    package_versions = {
+        "core": packages["ElsaVersion"],
+        "studio": packages["ElsaStudioVersion"],
+        "extensions": packages["ElsaExtensionsVersion"],
+    }
+    supersede_run_id = str(getattr(args, "supersede_run_id", "") or "").strip()
+    validate_supersede_request(
+        supersede_run_id,
+        event,
+        version,
+        publish,
+        args.ref,
+        selected_images,
+        package_versions,
+    )
+
     return {
         "version": version,
         "publish": publish,
         "sourceRef": args.ref,
         "sourceCommit": args.commit,
-        "packageVersions": {
-            "core": packages["ElsaVersion"],
-            "studio": packages["ElsaStudioVersion"],
-            "extensions": packages["ElsaExtensionsVersion"],
-        },
+        "packageVersions": package_versions,
+        "supersedeRunId": supersede_run_id,
         "images": selected_images,
         "requiredFamilies": sorted(required_families),
         "matrix": {"include": selected_images},
@@ -427,11 +464,17 @@ def verify_labels(reference: str, expected: dict[str, str], platforms: Iterable[
 
 
 def get_image_plan_with_packages(
-    repository: str, version: str, commit: str, source_ref: str, package_versions: dict[str, str]
+    repository: str,
+    version: str,
+    commit: str,
+    source_ref: str,
+    package_versions: dict[str, str],
+    *,
+    skip_version_tag: bool = False,
 ) -> dict[str, Any]:
     expected_labels = labels_for(version, commit, source_ref, package_versions)
     release_reference = image_reference(repository, version)
-    release_manifest = inspect_manifest(release_reference)
+    release_manifest = None if skip_version_tag else inspect_manifest(release_reference)
     if release_manifest:
         verified = verify_manifest(release_reference)
         verify_labels(release_reference, expected_labels, REQUIRED_PLATFORMS)
@@ -873,8 +916,54 @@ def run_docker_promotion(
     commit: str,
     source_ref: str,
     package_versions: dict[str, str],
+    *,
+    prior_by_reference: dict[str, dict[str, Any]] | None = None,
+    prior_commit: str = "",
+    prior_source_ref: str = "",
+    prior_package_versions: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     by_id = {fragment["id"]: fragment for fragment in fragments}
+    correction = prior_by_reference is not None
+    if correction:
+        planned_targets = {
+            image_reference(image["repository"], version)
+            for image in selected_images
+        }
+        planned_targets.update(
+            image_reference(alias["repository"], version)
+            for image in selected_images
+            for alias in image.get("aliases", [])
+        )
+        if set(prior_by_reference) != planned_targets or not prior_commit or not prior_source_ref or not prior_package_versions:
+            raise ReleaseError("Correction receipt and selected version tags do not match")
+
+    def inspect_target(reference: str, digest: str, platforms: dict[str, str]) -> str:
+        existing = inspect_manifest(reference)
+        if existing is None:
+            if correction:
+                raise ReleaseError(f"Correction target is missing: {reference}")
+            return "missing"
+        manifest = verify_manifest(reference)
+        if correction:
+            prior = prior_by_reference[reference]
+            if manifest["digest"] == digest and manifest["platforms"] == platforms:
+                verify_labels(reference, labels_for(version, commit, source_ref, package_versions), REQUIRED_PLATFORMS)
+                return "candidate"
+            if manifest["digest"] == prior["digest"] and manifest["platforms"] == prior["platforms"]:
+                verify_labels(
+                    reference,
+                    labels_for(version, prior_commit, prior_source_ref, prior_package_versions),
+                    REQUIRED_PLATFORMS,
+                )
+                return "prior"
+            raise ReleaseError(f"Correction target {reference} differs from both verified receipts")
+        verify_labels(reference, labels_for(version, commit, source_ref, package_versions), REQUIRED_PLATFORMS)
+        if manifest["digest"] != digest:
+            raise ReleaseError(f"Refusing to overwrite conflicting version tag {reference}")
+        if manifest["platforms"] != platforms:
+            raise ReleaseError(f"Refusing to reuse version tag with conflicting platforms {reference}")
+        return "candidate"
+
     planned: list[tuple[str, str, str, dict[str, Any]]] = []
 
     # Check every destination before creating any version tags.
@@ -886,18 +975,9 @@ def run_docker_promotion(
         fragment_platforms = {item["platform"]: item["digest"] for item in source["platforms"]}
         if source_manifest["platforms"] != fragment_platforms:
             raise ReleaseError(f"Source manifest platforms do not match verified smoke evidence for {image['name']}")
-        existing = inspect_manifest(version_ref)
-        if existing is not None:
-            existing_manifest = verify_manifest(version_ref)
-            verify_labels(
-                version_ref,
-                labels_for(version, commit, source_ref, package_versions),
-                REQUIRED_PLATFORMS,
-            )
-            if existing_manifest["digest"] != source_manifest["digest"]:
-                raise ReleaseError(f"Refusing to overwrite conflicting version tag {version_ref}")
-            if existing_manifest["platforms"] != source_manifest["platforms"]:
-                raise ReleaseError(f"Refusing to reuse version tag with conflicting platforms {version_ref}")
+        if correction:
+            verify_labels(immutable_source_ref, labels_for(version, commit, source_ref, package_versions), REQUIRED_PLATFORMS)
+        inspect_target(version_ref, source_manifest["digest"], source_manifest["platforms"])
         planned.append((version_ref, immutable_source_ref, image["id"], source_manifest))
 
     for image in selected_images:
@@ -905,20 +985,11 @@ def run_docker_promotion(
         source_platforms = {item["platform"]: item["digest"] for item in source["platforms"]}
         for alias in image.get("aliases", []):
             alias_ref = image_reference(alias["repository"], version)
-            existing = inspect_manifest(alias_ref)
-            if existing is None:
-                continue
-            existing_manifest = verify_manifest(alias_ref)
-            verify_labels(
-                alias_ref,
-                labels_for(version, commit, source_ref, package_versions),
-                REQUIRED_PLATFORMS,
-            )
-            if existing_manifest["digest"] != source["digest"] or existing_manifest["platforms"] != source_platforms:
-                raise ReleaseError(f"Refusing to overwrite conflicting alias tag {alias_ref}")
+            inspect_target(alias_ref, source["digest"], source_platforms)
 
     for version_ref, source_ref_for_image, image_id, source_manifest in planned:
-        if inspect_manifest(version_ref) is None:
+        state = inspect_target(version_ref, source_manifest["digest"], source_manifest["platforms"])
+        if state in ("missing", "prior"):
             run_command(["docker", "buildx", "imagetools", "create", "--tag", version_ref, source_ref_for_image])
         promoted = verify_manifest(version_ref, expected_digest=source_manifest["digest"])
         if promoted["platforms"] != source_manifest["platforms"]:
@@ -963,8 +1034,9 @@ def run_docker_promotion(
         canonical = canonical_by_id[image["id"]]
         for alias in image.get("aliases", []):
             alias_ref = image_reference(alias["repository"], version)
-            existing = inspect_manifest(alias_ref)
-            if existing is None:
+            source_platforms = {item["platform"]: item["digest"] for item in canonical["platforms"]}
+            state = inspect_target(alias_ref, canonical["digest"], source_platforms)
+            if state in ("missing", "prior"):
                 run_command(
                     [
                         "docker",
@@ -998,6 +1070,294 @@ def run_docker_promotion(
     return output
 
 
+def validate_receipt_platforms(value: Any, context: str) -> dict[str, str]:
+    if not isinstance(value, list):
+        raise ReleaseError(f"Prior receipt has invalid platform evidence for {context}")
+    platforms: dict[str, str] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            raise ReleaseError(f"Prior receipt has invalid platform evidence for {context}")
+        platform = item.get("platform")
+        digest = item.get("digest")
+        if platform not in REQUIRED_PLATFORMS or platform in platforms:
+            raise ReleaseError(f"Prior receipt has duplicate or unsupported platforms for {context}")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ReleaseError(f"Prior receipt has an invalid platform digest for {context}")
+        platforms[platform] = digest
+    if set(platforms) != set(REQUIRED_PLATFORMS):
+        raise ReleaseError(f"Prior receipt is missing a required platform for {context}")
+    return {platform: platforms[platform] for platform in REQUIRED_PLATFORMS}
+
+
+def validate_superseded_receipt(
+    receipt: Any,
+    *,
+    version: str,
+    package_versions: dict[str, str],
+    repository: str,
+    run: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    if not isinstance(receipt, dict):
+        raise ReleaseError("Prior receipt is not a JSON object")
+    old_commit = str(run.get("head_sha", ""))
+    run_id = str(run.get("id", ""))
+    run_attempt = run.get("run_attempt")
+    expected_workflow = ".github/workflows/container-images.yml"
+    source = receipt.get("appsSource")
+    prior_run = receipt.get("workflowRun")
+    inputs = receipt.get("workflowInputs")
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", old_commit)
+        or receipt.get("schemaVersion") != 1
+        or receipt.get("releaseVersion") != version
+        or receipt.get("publication") != "published"
+        or receipt.get("appsRepository") != repository
+        or receipt.get("appsSourceCommit") != old_commit
+        or not isinstance(source, dict)
+        or source.get("commit") != old_commit
+        or source.get("ref") != "refs/heads/main"
+        or receipt.get("packageVersions") != package_versions
+        or not isinstance(prior_run, dict)
+        or prior_run.get("repository") != repository
+        or str(prior_run.get("id", "")) != run_id
+        or prior_run.get("runAttempt") != run_attempt
+        or prior_run.get("workflow") != expected_workflow
+        or prior_run.get("url") != run.get("html_url")
+        or prior_run.get("event") != "workflow_dispatch"
+        or prior_run.get("ref") != "refs/heads/main"
+        or prior_run.get("headSha") != old_commit
+        or prior_run.get("conclusion") != "success"
+        or not isinstance(inputs, dict)
+        or inputs.get("version") != version
+        or inputs.get("publish") is not True
+        or inputs.get("expected_commit") != old_commit
+        or any(inputs.get(f"{family}_version") != version for family in package_versions)
+    ):
+        raise ReleaseError("Prior receipt provenance does not match the successful full-version main publication")
+    expected_targets: dict[str, tuple[dict[str, Any], str | None]] = {}
+    for image in IMAGES:
+        expected_targets[image_reference(image["repository"], version)] = (image, None)
+        for alias in image.get("aliases", []):
+            expected_targets[image_reference(alias["repository"], version)] = (image, alias["name"])
+
+    receipt_images = receipt.get("images")
+    if not isinstance(receipt_images, list) or len(receipt_images) != len(expected_targets):
+        raise ReleaseError("Prior receipt must contain exactly the six profiles and two aliases")
+    by_reference: dict[str, dict[str, Any]] = {}
+    for entry in receipt_images:
+        if not isinstance(entry, dict):
+            raise ReleaseError("Prior receipt contains an invalid image entry")
+        reference = image_reference(str(entry.get("repository", "")), str(entry.get("tag", "")))
+        if reference not in expected_targets or reference in by_reference:
+            raise ReleaseError("Prior receipt contains an unexpected or duplicate image reference")
+        image, alias_name = expected_targets[reference]
+        expected_name = alias_name or image["name"]
+        if (
+            entry.get("name") != expected_name
+            or entry.get("tag") != version
+            or entry.get("packageVersions") != {family: version for family in image["packages"]}
+            or (alias_name is not None and entry.get("alias_of") != image["name"])
+            or (alias_name is None and "alias_of" in entry)
+        ):
+            raise ReleaseError(f"Prior receipt image identity or package versions are invalid for {reference}")
+        digest = entry.get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ReleaseError(f"Prior receipt has an invalid image digest for {reference}")
+        image_platforms = validate_receipt_platforms(entry.get("platforms"), reference)
+        by_reference[reference] = {
+            "digest": digest,
+            "platforms": image_platforms,
+        }
+
+    for image in IMAGES:
+        canonical = by_reference[image_reference(image["repository"], version)]
+        for alias in image.get("aliases", []):
+            alias_entry = by_reference[image_reference(alias["repository"], version)]
+            if alias_entry["digest"] != canonical["digest"] or alias_entry["platforms"] != canonical["platforms"]:
+                raise ReleaseError(f"Prior receipt alias does not match {image['name']}")
+
+    references = [
+        {"reference": reference, "digest": entry["digest"],
+         "platforms": [{"platform": platform, "digest": entry["platforms"][platform]}
+                       for platform in REQUIRED_PLATFORMS]}
+        for reference, entry in by_reference.items()
+    ]
+    supersedes = {
+        "workflowRun": {
+            "repository": repository,
+            "id": run_id,
+            "runAttempt": run_attempt,
+            "workflow": expected_workflow,
+            "url": run.get("html_url"),
+            "event": "workflow_dispatch",
+            "ref": "refs/heads/main",
+            "headSha": old_commit,
+        },
+        "appsSourceCommit": old_commit,
+        "references": references,
+    }
+    return by_reference, supersedes
+
+
+def github_api_json(endpoint: str) -> dict[str, Any]:
+    result = subprocess.run(
+        ["gh", "api", endpoint], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ.copy()
+    )
+    if result.returncode:
+        raise ReleaseError(f"GitHub API request failed while verifying prior publication (exit {result.returncode})")
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ReleaseError("GitHub API returned invalid JSON while verifying prior publication") from error
+    if not isinstance(value, dict):
+        raise ReleaseError("GitHub API returned an unexpected response while verifying prior publication")
+    return value
+
+
+def github_api_artifact_zip(endpoint: str) -> bytes:
+    result = subprocess.run(
+        ["gh", "api", endpoint], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ.copy()
+    )
+    if result.returncode:
+        raise ReleaseError(f"Could not download prior receipt artifact (exit {result.returncode})")
+    return result.stdout
+
+
+def validate_superseded_archive(
+    archive: bytes,
+    artifact: dict[str, Any],
+    *,
+    expected_name: str,
+    run: dict[str, Any],
+    version: str,
+    package_versions: dict[str, str],
+    repository: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
+    if artifact.get("name") != expected_name or artifact.get("expired") is not False:
+        raise ReleaseError("Prior run does not have the exact unexpired receipt artifact")
+    artifact_run = artifact.get("workflow_run")
+    if not isinstance(artifact_run, dict) or (
+        str(artifact_run.get("id", "")) != str(run.get("id", ""))
+        or artifact_run.get("head_sha") != run.get("head_sha")
+        or artifact_run.get("head_branch") != "main"
+    ):
+        raise ReleaseError("Prior receipt artifact metadata does not match its workflow run")
+    size = artifact.get("size_in_bytes")
+    if type(size) is not int or size < 1 or size > 5 * 1024 * 1024 or len(archive) > 5 * 1024 * 1024:
+        raise ReleaseError("Prior receipt artifact is unexpectedly large or has invalid size metadata")
+    api_digest = artifact.get("digest")
+    if not isinstance(api_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", api_digest):
+        raise ReleaseError("GitHub did not provide a valid prior receipt archive digest")
+    actual_digest = "sha256:" + hashlib.sha256(archive).hexdigest()
+    if actual_digest != api_digest:
+        raise ReleaseError("Downloaded prior receipt archive does not match GitHub artifact metadata")
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+            members = zipped.infolist()
+            if len(members) != 1 or members[0].filename != "container-release-receipt.json":
+                raise ReleaseError("Prior receipt archive must contain only container-release-receipt.json")
+            if members[0].file_size > 2 * 1024 * 1024 or members[0].is_dir():
+                raise ReleaseError("Prior receipt artifact has an invalid or oversized JSON member")
+            receipt_text = zipped.read(members[0]).decode("utf-8")
+        receipt = json.loads(receipt_text)
+    except (zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+        raise ReleaseError("Prior receipt artifact is not a valid single-file JSON archive") from error
+
+    by_reference, supersedes = validate_superseded_receipt(
+        receipt,
+        version=version,
+        package_versions=package_versions,
+        repository=repository,
+        run=run,
+    )
+    artifact_id = artifact.get("id")
+    if type(artifact_id) is not int or artifact_id < 1:
+        raise ReleaseError("Prior receipt artifact has an invalid GitHub artifact id")
+    supersedes["receiptArtifact"] = {
+        "id": artifact_id,
+        "name": expected_name,
+        "archiveDigest": actual_digest,
+    }
+    return receipt, by_reference, supersedes
+
+
+def load_superseded_publication(
+    run_id: str,
+    *,
+    version: str,
+    package_versions: dict[str, str],
+    repository: str,
+    current_run_id: str,
+    current_commit: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
+    if not re.fullmatch(r"[1-9][0-9]*", run_id) or run_id == current_run_id:
+        raise ReleaseError("supersede_run_id must identify a different completed publication run")
+    if repository != APPS_REPOSITORY:
+        raise ReleaseError("Corrections are supported only in the canonical Apps repository")
+    run = github_api_json(f"repos/{repository}/actions/runs/{run_id}")
+    workflow_path = str(run.get("path", "")).split("@", 1)[0]
+    source_repository = (run.get("head_repository") or {}).get("full_name")
+    run_repository = (run.get("repository") or {}).get("full_name")
+    old_commit = str(run.get("head_sha", ""))
+    attempt = run.get("run_attempt")
+    if (
+        str(run.get("id", "")) != run_id
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+        or run.get("event") != "workflow_dispatch"
+        or workflow_path != ".github/workflows/container-images.yml"
+        or run.get("head_branch") != "main"
+        or run.get("head_ref") not in (None, "", "refs/heads/main")
+        or run_repository != repository
+        or source_repository != repository
+        or type(attempt) is not int
+        or attempt < 1
+        or not re.fullmatch(r"[0-9a-f]{40}", old_commit)
+    ):
+        raise ReleaseError("supersede_run_id is not a completed successful canonical main publication")
+    if old_commit == current_commit:
+        raise ReleaseError("A correction requires a new source commit containing the fix")
+
+    # The prior source must be in the corrected source's history; the candidate itself must be in main.
+    for ancestor, descendant, message in (
+        (old_commit, current_commit, "Prior publication source is not an ancestor of the correction source"),
+        (current_commit, "refs/remotes/origin/main", "Correction source is not in main history"),
+    ):
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode:
+            raise ReleaseError(message)
+
+    artifacts_response = github_api_json(f"repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100")
+    artifacts = artifacts_response.get("artifacts")
+    if not isinstance(artifacts, list) or artifacts_response.get("total_count") != len(artifacts):
+        raise ReleaseError("Could not enumerate every artifact from the prior publication run")
+    artifact_name = f"container-release-receipt-{version}-{run_id}-{attempt}"
+    matches = [artifact for artifact in artifacts if isinstance(artifact, dict) and artifact.get("name") == artifact_name]
+    if len(matches) != 1:
+        raise ReleaseError("Prior successful run must have exactly one receipt artifact with the expected name")
+    artifact = matches[0]
+    artifact_id = artifact.get("id")
+    if type(artifact_id) is not int or artifact_id < 1:
+        raise ReleaseError("Prior receipt artifact has an invalid GitHub artifact id")
+    archive = github_api_artifact_zip(f"repos/{repository}/actions/artifacts/{artifact_id}/zip")
+    receipt, _by_reference, supersedes = validate_superseded_archive(
+        archive,
+        artifact,
+        expected_name=artifact_name,
+        run=run,
+        version=version,
+        package_versions=package_versions,
+        repository=repository,
+    )
+    return receipt, _by_reference, supersedes
+
+
 def receipt_metadata(args: argparse.Namespace) -> dict[str, Any]:
     run_url = f"https://github.com/{args.repository}/actions/runs/{args.run_id}"
     return {
@@ -1029,6 +1389,7 @@ def receipt_metadata(args: argparse.Namespace) -> dict[str, Any]:
             "core_version": getattr(args, "input_core_version", ""),
             "studio_version": getattr(args, "input_studio_version", ""),
             "extensions_version": getattr(args, "input_extensions_version", ""),
+            "supersede_run_id": getattr(args, "supersede_run_id", ""),
             "expected_commit": (
                 getattr(args, "expected_commit", "") or args.commit
                 if args.event == "release"
@@ -1092,6 +1453,7 @@ def create_parser() -> argparse.ArgumentParser:
     validate.add_argument("--studio-version", default="")
     validate.add_argument("--extensions-version", default="")
     validate.add_argument("--expected-commit", default="")
+    validate.add_argument("--supersede-run-id", default="")
     validate.add_argument("--ref", required=True)
     validate.add_argument("--commit", required=True)
     validate.add_argument("--release-tag", default="")
@@ -1109,6 +1471,7 @@ def create_parser() -> argparse.ArgumentParser:
     plan.add_argument("--core-version", required=True)
     plan.add_argument("--studio-version", required=True)
     plan.add_argument("--extensions-version", required=True)
+    plan.add_argument("--skip-version-tag", action="store_true")
     plan.add_argument("--output", default=os.environ.get("GITHUB_OUTPUT"))
 
     verify = subparsers.add_parser("verify-image")
@@ -1153,6 +1516,7 @@ def create_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--input-core-version", default="")
     finalize.add_argument("--input-studio-version", default="")
     finalize.add_argument("--input-extensions-version", default="")
+    finalize.add_argument("--supersede-run-id", default="")
     finalize.add_argument("--event", required=True)
     finalize.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", APPS_REPOSITORY))
     finalize.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
@@ -1179,6 +1543,7 @@ def main(argv: list[str] | None = None) -> int:
                     "core_version": run["packageVersions"]["core"],
                     "studio_version": run["packageVersions"]["studio"],
                     "extensions_version": run["packageVersions"]["extensions"],
+                    "supersede_run_id": run["supersedeRunId"],
                     "images": ",".join(image["name"] for image in run["images"]),
                     "matrix": run["matrix"],
                 },
@@ -1197,7 +1562,12 @@ def main(argv: list[str] | None = None) -> int:
                 "extensions": args.extensions_version,
             }
             plan = get_image_plan_with_packages(
-                args.repository, args.version, args.commit, args.source_ref, package_versions
+                args.repository,
+                args.version,
+                args.commit,
+                args.source_ref,
+                package_versions,
+                skip_version_tag=args.skip_version_tag,
             )
             github_output(
                 {
@@ -1300,20 +1670,60 @@ def main(argv: list[str] | None = None) -> int:
                 package_versions,
                 args.publication,
             )
+            supersede_run_id = str(getattr(args, "supersede_run_id", "") or "").strip()
+            superseded_receipt = None
+            supersedes = None
             if args.publication == "published":
-                images = run_docker_promotion(
-                    fragments,
-                    selected_images,
-                    args.version,
-                    args.commit,
-                    args.source_ref,
-                    package_versions,
-                )
+                if supersede_run_id:
+                    validate_supersede_request(
+                        supersede_run_id,
+                        args.event,
+                        args.version,
+                        True,
+                        args.source_ref,
+                        selected_images,
+                        package_versions,
+                    )
+                    if args.expected_commit != args.commit:
+                        raise ReleaseError("Correction expected_commit must equal the checked-out source commit")
+                    if str(args.run_id) == supersede_run_id:
+                        raise ReleaseError("A correction cannot supersede its own workflow run")
+                    superseded_receipt, prior_by_reference, supersedes = load_superseded_publication(
+                        supersede_run_id,
+                        version=args.version,
+                        package_versions=package_versions,
+                        repository=args.repository,
+                        current_run_id=str(args.run_id),
+                        current_commit=args.commit,
+                    )
+                    images = run_docker_promotion(
+                        fragments,
+                        selected_images,
+                        args.version,
+                        args.commit,
+                        args.source_ref,
+                        package_versions,
+                        prior_by_reference=prior_by_reference,
+                        prior_commit=superseded_receipt["appsSourceCommit"],
+                        prior_source_ref=superseded_receipt["appsSource"]["ref"],
+                        prior_package_versions=superseded_receipt["packageVersions"],
+                    )
+                else:
+                    images = run_docker_promotion(
+                        fragments,
+                        selected_images,
+                        args.version,
+                        args.commit,
+                        args.source_ref,
+                        package_versions,
+                    )
                 registry_verified_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
             else:
                 images = build_only_images(fragments, selected_images, args.version, package_versions)
                 registry_verified_at = None
             receipt = receipt_metadata(args)
+            if supersedes is not None:
+                receipt["supersedes"] = supersedes
             receipt["images"] = images
             receipt["resolvedPackages"] = aggregate_resolved_packages(images)
             receipt["imageEvidence"] = [
