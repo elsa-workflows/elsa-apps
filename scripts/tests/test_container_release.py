@@ -1,5 +1,6 @@
 import argparse
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -112,6 +113,7 @@ class ManifestPromotionTests(unittest.TestCase):
     def test_first_publish_promotes_source_before_alias_without_overwrite(self):
         image = release.parse_image_selection("server")[0]
         source_ref = f"{image['repository']}:3.9.0-sha-{COMMIT}"
+        digest_ref = f"{image['repository']}@{ROOT_DIGEST}"
         fragment = {
             "id": "server",
             "name": "server",
@@ -125,8 +127,9 @@ class ManifestPromotionTests(unittest.TestCase):
             "smoke": {"success": True, "imageDigest": ROOT_DIGEST, "platforms": []},
             "resolvedPackages": {},
         }
-        registry = {source_ref: {"digest": ROOT_DIGEST, "platforms": PLATFORMS}}
+        registry = {digest_ref: {"digest": ROOT_DIGEST, "platforms": PLATFORMS}}
         created_tags = []
+        copied_sources = []
 
         def inspect(reference):
             return registry.get(reference)
@@ -143,6 +146,7 @@ class ManifestPromotionTests(unittest.TestCase):
             if command[:5] == ["docker", "buildx", "imagetools", "create", "--tag"]:
                 target = command[5]
                 created_tags.append(target)
+                copied_sources.append(command[6])
                 registry[target] = {"digest": ROOT_DIGEST, "platforms": PLATFORMS}
             return None
 
@@ -167,6 +171,195 @@ class ManifestPromotionTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in promoted], ["server", "server-alias"])
         self.assertEqual(promoted[0]["digest"], ROOT_DIGEST)
         self.assertEqual(promoted[1]["alias_of"], "server")
+        self.assertEqual(copied_sources[0], digest_ref)
+        self.assertEqual(copied_sources[1], f"{image['repository']}@{ROOT_DIGEST}")
+
+    def test_conflicting_version_or_alias_tag_is_rejected_before_any_tag_creation(self):
+        image = release.parse_image_selection("server")[0]
+        fragment = server_fragment()
+        digest_ref = f"{image['repository']}@{ROOT_DIGEST}"
+        conflicts = (
+            f"{image['repository']}:3.9.0",
+            f"{image['aliases'][0]['repository']}:3.9.0",
+        )
+        package_versions = {"core": "3.9.0", "studio": "3.9.0", "extensions": "3.9.0"}
+        expected_labels = release.labels_for("3.9.0", COMMIT, "refs/heads/main", package_versions)
+
+        for conflict_ref in conflicts:
+            with self.subTest(conflict_ref=conflict_ref):
+                registry = {
+                    digest_ref: {"digest": ROOT_DIGEST, "platforms": PLATFORMS},
+                    conflict_ref: {"digest": "sha256:" + "e" * 64, "platforms": PLATFORMS},
+                }
+                commands = []
+
+                def docker_command(command, **kwargs):
+                    commands.append(command)
+                    return Mock(stdout=json.dumps(expected_labels))
+
+                with (
+                    patch.object(release, "inspect_manifest", side_effect=registry.get),
+                    patch.object(release, "run_command", side_effect=docker_command),
+                ):
+                    with self.assertRaisesRegex(release.ReleaseError, "conflicting|overwrite"):
+                        release.run_docker_promotion(
+                            [fragment], [image], "3.9.0", COMMIT, "refs/heads/main", package_versions
+                        )
+                self.assertFalse(
+                    any(command[:4] == ["docker", "buildx", "imagetools", "create"] for command in commands)
+                )
+
+
+def server_fragment():
+    image = release.parse_image_selection("server")[0]
+    platforms = [
+        {"platform": platform, "digest": digest}
+        for platform, digest in PLATFORMS.items()
+    ]
+    smoke_platforms = [
+        {
+            "platform": platform,
+            "imageDigest": digest,
+            "status": "success",
+            "httpStatus": 200,
+            "browserAssets": [],
+            "identityLogin": {"status": 200, "endpoint": "/elsa/api/identity/login"},
+            "bearerApi": {"status": 200, "endpoint": "/elsa/api/identity/me/permissions"},
+        }
+        for platform, digest in PLATFORMS.items()
+    ]
+    return {
+        "id": image["id"],
+        "name": image["name"],
+        "repository": image["repository"],
+        "sourceRef": f"{image['repository']}:3.9.0-sha-{COMMIT}",
+        "digest": ROOT_DIGEST,
+        "platforms": platforms,
+        "smoke": {"success": True, "imageDigest": ROOT_DIGEST, "platforms": smoke_platforms},
+        "resolvedPackages": {
+            "core": [{"id": "Elsa", "version": "3.9.0"}],
+            "extensions": [{"id": "Elsa.Logging", "version": "3.9.0"}],
+        },
+    }
+
+
+class ImageArtifactSelectionTests(unittest.TestCase):
+    def test_newest_attempt_wins_independent_of_download_order_and_retains_earlier_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = []
+            for profile, attempt in (("server", 1), ("studio-wasm", 1), ("server", 2)):
+                directory = root / f"container-image-{profile}-12345-{attempt}"
+                directory.mkdir()
+                artifact_file = directory / f"{profile}.json"
+                artifact_file.write_text("{}", encoding="utf-8")
+                paths.append(artifact_file)
+            selected_images = release.parse_image_selection("server,studio-wasm")
+
+            forward = release.select_latest_image_artifacts(paths, selected_images, "12345", 2)
+            reverse = release.select_latest_image_artifacts(list(reversed(paths)), selected_images, "12345", 2)
+            self.assertEqual([(item["id"], item["runAttempt"]) for item in forward], [
+                ("server", 2), ("studio-wasm", 1)
+            ])
+            self.assertEqual(forward, reverse)
+
+    def test_rejects_missing_wrong_run_future_duplicate_and_unknown_artifacts(self):
+        selected_images = release.parse_image_selection("server")
+        cases = (
+            ([], "Missing"),
+            ([Path("/tmp/container-image-server-99999-1/server.json")], "belongs to run"),
+            ([Path("/tmp/container-image-server-12345-3/server.json")], "future attempt"),
+            ([Path("/tmp/container-image-server-12345-0/server.json")], "invalid/future attempt"),
+            ([Path("/tmp/container-image-unknown-12345-1/unknown.json")], "unknown profile"),
+            ([
+                Path("/tmp/container-image-server-12345-1/server.json"),
+                Path("/tmp/container-image-server-12345-1/server.json"),
+            ], "Duplicate"),
+        )
+        for paths, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(release.ReleaseError, message):
+                    release.select_latest_image_artifacts(paths, selected_images, "12345", 2)
+
+    def test_fragment_profile_must_match_artifact_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact_dir = Path(temporary) / "container-image-server-12345-1"
+            artifact_dir.mkdir()
+            (artifact_dir / "server.json").write_text(json.dumps({"id": "studio-wasm"}), encoding="utf-8")
+            selected = release.select_latest_image_artifacts(
+                [artifact_dir / "server.json"], release.parse_image_selection("server"), "12345", 1
+            )
+            with self.assertRaisesRegex(release.ReleaseError, "contains profile"):
+                release.read_fragments(selected, release.parse_image_selection("server"))
+
+
+class FinalizeEvidenceRejectionTests(unittest.TestCase):
+    def run_finalize_with_fragment(self, fragment):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        artifact_dir = root / f"container-image-server-12345-1"
+        artifact_dir.mkdir()
+        (artifact_dir / "server.json").write_text(json.dumps(fragment), encoding="utf-8")
+        command = [
+            "finalize", "--publication", "published", "--version", "3.9.0",
+            "--commit", COMMIT, "--source-ref", "refs/heads/main", "--images", "server",
+            "--core-version", "3.9.0", "--studio-version", "3.9.0", "--extensions-version", "3.9.0",
+            "--event", "workflow_dispatch", "--repository", "elsa-workflows/elsa-apps",
+            "--run-id", "12345", "--run-attempt", "2", "--expected-commit", COMMIT,
+            "--artifact-dir", str(root), "--output-file", str(root / "receipt.json"),
+        ]
+        with (
+            patch.object(release, "run_command") as create_tag,
+            patch.object(release, "inspect_manifest") as inspect,
+        ):
+            result = release.main(command)
+        self.assertEqual(result, 1)
+        create_tag.assert_not_called()
+        inspect.assert_not_called()
+
+    def test_missing_platform_smoke_is_rejected_before_any_tag_creation(self):
+        fragment = server_fragment()
+        fragment["smoke"]["platforms"].pop()
+        self.run_finalize_with_fragment(fragment)
+
+    def test_mismatched_resolved_package_is_rejected_before_any_tag_creation(self):
+        fragment = server_fragment()
+        fragment["resolvedPackages"]["core"][0]["version"] = "3.8.4"
+        self.run_finalize_with_fragment(fragment)
+
+    def test_receipt_records_selected_earlier_evidence_attempt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact_dir = root / "container-image-server-12345-1"
+            artifact_dir.mkdir()
+            fragment = server_fragment()
+            fragment["sourceRef"] = f"elsa-local-server:3.9.0-{COMMIT}"
+            fragment["platforms"] = [{"platform": "linux/amd64", "digest": ROOT_DIGEST}]
+            fragment["smoke"]["platforms"] = fragment["smoke"]["platforms"][:1]
+            fragment["smoke"]["platforms"][0]["imageDigest"] = ROOT_DIGEST
+            (artifact_dir / "server.json").write_text(json.dumps(fragment), encoding="utf-8")
+            receipt_path = root / "receipt.json"
+            command = [
+                "finalize", "--publication", "build-only", "--version", "3.9.0",
+                "--commit", COMMIT, "--source-ref", "refs/heads/main", "--images", "server",
+                "--core-version", "3.9.0", "--studio-version", "3.9.0", "--extensions-version", "3.9.0",
+                "--event", "workflow_dispatch", "--repository", "elsa-workflows/elsa-apps",
+                "--run-id", "12345", "--run-attempt", "2", "--expected-commit", COMMIT,
+                "--artifact-dir", str(root), "--output-file", str(receipt_path),
+            ]
+            self.assertEqual(release.main(command), 0)
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["workflowRun"]["runAttempt"], 2)
+            self.assertEqual(
+                receipt["imageEvidence"],
+                [{
+                    "profile": "server",
+                    "artifactName": "container-image-server-12345-1",
+                    "runId": "12345",
+                    "runAttempt": 1,
+                }],
+            )
 
 
 class BrowserAssetSmokeTests(unittest.TestCase):

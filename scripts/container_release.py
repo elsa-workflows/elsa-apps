@@ -631,12 +631,82 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def read_fragments(paths: list[str], selected_images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    fragments = [json.loads(Path(path).read_text(encoding="utf-8")) for path in paths]
-    ids = [fragment.get("id") for fragment in fragments]
-    expected_ids = {image["id"] for image in selected_images}
-    if len(fragments) != len(selected_images) or set(ids) != expected_ids:
-        raise ReleaseError(f"Expected one result for every image; found {ids}")
+def select_latest_image_artifacts(
+    paths: Iterable[Path],
+    selected_images: list[dict[str, Any]],
+    run_id: str,
+    current_attempt: int,
+) -> list[dict[str, Any]]:
+    expected = {image["id"] for image in selected_images}
+    all_ids = {image["id"] for image in IMAGES}
+    artifacts: dict[tuple[str, int], list[Path]] = {}
+    artifact_names: dict[tuple[str, int], str] = {}
+    pattern = re.compile(r"^container-image-([a-z0-9-]+)-([0-9]+)-([0-9]+)$")
+
+    for path in paths:
+        artifact_name = path.parent.name
+        match = pattern.fullmatch(artifact_name)
+        if not match:
+            raise ReleaseError(f"Malformed image evidence artifact name: {artifact_name!r}")
+        image_id, artifact_run_id, attempt_text = match.groups()
+        if image_id not in all_ids:
+            raise ReleaseError(f"Image evidence artifact contains an unknown profile: {image_id!r}")
+        if image_id not in expected:
+            raise ReleaseError(f"Unexpected image evidence artifact for unselected profile {image_id!r}")
+        if path.name != f"{image_id}.json":
+            raise ReleaseError(f"Image evidence artifact {artifact_name} has unexpected file {path.name!r}")
+        if artifact_run_id != str(run_id):
+            raise ReleaseError(f"Image evidence artifact belongs to run {artifact_run_id}, expected {run_id}")
+        attempt = int(attempt_text)
+        if attempt < 1 or attempt > current_attempt:
+            raise ReleaseError(f"Image evidence artifact has invalid/future attempt {attempt}")
+        key = (image_id, attempt)
+        artifacts.setdefault(key, []).append(path)
+        artifact_names[key] = artifact_name
+
+    selected: list[dict[str, Any]] = []
+    for image in selected_images:
+        image_id = image["id"]
+        attempts = [attempt for candidate_id, attempt in artifacts if candidate_id == image_id]
+        if not attempts:
+            raise ReleaseError(f"Missing image evidence artifact for selected profile {image_id!r}")
+        attempt = max(attempts)
+        key = (image_id, attempt)
+        candidates = artifacts[key]
+        if len(candidates) != 1:
+            raise ReleaseError(f"Duplicate image evidence artifacts for {image_id!r} attempt {attempt}")
+        selected.append(
+            {
+                "id": image_id,
+                "path": candidates[0],
+                "artifactName": artifact_names[key],
+                "runId": str(run_id),
+                "runAttempt": attempt,
+            }
+        )
+    return selected
+
+
+def read_fragments(
+    selected_artifacts: list[dict[str, Any]], selected_images: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    expected_ids = [image["id"] for image in selected_images]
+    artifact_ids = [item["id"] for item in selected_artifacts]
+    if artifact_ids != expected_ids:
+        raise ReleaseError(f"Expected selected artifacts in profile order; found {artifact_ids}")
+    fragments = []
+    for artifact in selected_artifacts:
+        fragment = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+        if fragment.get("id") != artifact["id"]:
+            raise ReleaseError(
+                f"Image evidence artifact {artifact['artifactName']} contains profile {fragment.get('id')!r}"
+            )
+        fragment["evidenceRun"] = {
+            "artifactName": artifact["artifactName"],
+            "runId": artifact["runId"],
+            "runAttempt": artifact["runAttempt"],
+        }
+        fragments.append(fragment)
     return fragments
 
 
@@ -743,7 +813,8 @@ def run_docker_promotion(
     for image in selected_images:
         source = by_id[image["id"]]
         version_ref = image_reference(image["repository"], version)
-        source_manifest = verify_manifest(source["sourceRef"], expected_digest=source["digest"])
+        immutable_source_ref = f"{image['repository']}@{source['digest']}"
+        source_manifest = verify_manifest(immutable_source_ref, expected_digest=source["digest"])
         fragment_platforms = {item["platform"]: item["digest"] for item in source["platforms"]}
         if source_manifest["platforms"] != fragment_platforms:
             raise ReleaseError(f"Source manifest platforms do not match verified smoke evidence for {image['name']}")
@@ -759,7 +830,7 @@ def run_docker_promotion(
                 raise ReleaseError(f"Refusing to overwrite conflicting version tag {version_ref}")
             if existing_manifest["platforms"] != source_manifest["platforms"]:
                 raise ReleaseError(f"Refusing to reuse version tag with conflicting platforms {version_ref}")
-        planned.append((version_ref, source["sourceRef"], image["id"], source_manifest))
+        planned.append((version_ref, immutable_source_ref, image["id"], source_manifest))
 
     for image in selected_images:
         source = by_id[image["id"]]
@@ -1019,7 +1090,7 @@ def create_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
     finalize.add_argument("--run-attempt", type=int, default=os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
     finalize.add_argument("--workflow", default=".github/workflows/container-images.yml")
-    finalize.add_argument("--fragments", nargs="+", required=True)
+    finalize.add_argument("--artifact-dir", required=True)
     finalize.add_argument("--output-file", default="artifacts/container-release-receipt.json")
 
     return parser
@@ -1141,7 +1212,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "finalize":
             selected_images = parse_image_selection(args.images)
-            fragments = read_fragments(args.fragments, selected_images)
+            artifact_root = Path(args.artifact_dir)
+            if not artifact_root.is_dir():
+                raise ReleaseError(f"Image evidence artifact directory does not exist: {artifact_root}")
+            selected_artifacts = select_latest_image_artifacts(
+                artifact_root.rglob("*.json"), selected_images, args.run_id, args.run_attempt
+            )
+            fragments = read_fragments(selected_artifacts, selected_images)
             package_versions = {
                 "core": args.core_version,
                 "studio": args.studio_version,
@@ -1171,6 +1248,13 @@ def main(argv: list[str] | None = None) -> int:
             receipt = receipt_metadata(args)
             receipt["images"] = images
             receipt["resolvedPackages"] = aggregate_resolved_packages(images)
+            receipt["imageEvidence"] = [
+                {
+                    "profile": fragment["name"],
+                    **fragment["evidenceRun"],
+                }
+                for fragment in fragments
+            ]
             receipt["registryVerifiedAt"] = registry_verified_at
             receipt["smoke"] = {
                 "success": all(image.get("smoke", {}).get("success") for image in images),

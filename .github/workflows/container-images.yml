@@ -283,9 +283,9 @@ jobs:
       - name: Download image evidence
         uses: actions/download-artifact@v4
         with:
-          pattern: container-image-*-*-*
-          path: artifacts/images
-          merge-multiple: true
+          pattern: container-image-*-${{ github.run_id }}-*
+          path: artifacts/image-evidence
+          merge-multiple: false
 
       - name: Set up Docker Buildx
         if: needs.prepare.outputs.publish == 'true'
@@ -338,7 +338,9 @@ jobs:
             --input-core-version "$INPUT_CORE_VERSION" \
             --input-studio-version "$INPUT_STUDIO_VERSION" \
             --input-extensions-version "$INPUT_EXTENSIONS_VERSION" \
-            --fragments artifacts/images/*.json \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --artifact-dir artifacts/image-evidence \
             --output-file artifacts/container-release-receipt.json
 
       - name: Upload release receipt
