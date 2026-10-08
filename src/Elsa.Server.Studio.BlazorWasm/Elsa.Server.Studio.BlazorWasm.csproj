@@ -2,6 +2,7 @@
 
     <ItemGroup>
         <PackageReference Include="Elsa"/>
+        <PackageReference Include="Elsa.Dashboard.Api"/>
         <PackageReference Include="Elsa.Expressions.CSharp"/>
         <PackageReference Include="Elsa.Persistence.EFCore"/>
         <PackageReference Include="Elsa.Persistence.EFCore.Sqlite"/>

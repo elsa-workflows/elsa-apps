@@ -40,7 +40,7 @@ builder.Services.AddCore();
 builder.Services.AddShell();
 builder.Services.AddRemoteBackend(backendApiConfig);
 builder.Services.AddLoginModule().UseElsaIdentity();
-builder.Services.AddDashboardModule();
+builder.Services.AddDashboardModule(backendApiConfig);
 builder.Services.AddWorkflowsModule();
 builder.Services.AddWorkflowContextsModule();
 builder.Services.AddScoped<ITimeZoneProvider, LocalTimeZoneProvider>();

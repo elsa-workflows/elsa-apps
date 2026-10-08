@@ -12,6 +12,7 @@
     <ItemGroup>
         <PackageVersion Include="Elsa" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Api.Client" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Dashboard.Api" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Expressions.CSharp" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Persistence.EFCore" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Persistence.EFCore.MySql" Version="$(ElsaVersion)"/>

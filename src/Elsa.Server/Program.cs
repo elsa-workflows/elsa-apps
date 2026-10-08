@@ -42,6 +42,7 @@ services.AddElsa(elsa =>
         })
         .UseDefaultAuthentication(auth => auth.UseAdminApiKey())
         .UseWorkflowsApi()
+        .UseDashboardApi()
         .UseCSharp()
         .UseJavaScript(options => options.AllowClrAccess = true)
         .UseHttp(options => options.ConfigureHttpOptions = httpOptions => configuration.Bind("Http", httpOptions))

@@ -25,6 +25,7 @@ ELSA_VERSION = re.compile(rf"^3\.{_NUM}\.{_NUM}(?:-{_PRERELEASE_ID}(?:\.{_PREREL
 REQUIRED_PLATFORMS = ("linux/amd64", "linux/arm64")
 APPS_REPOSITORY = "elsa-workflows/elsa-apps"
 BEARER_API_ENDPOINT = "/elsa/api/workflow-definitions?page=0&pageSize=1"
+DASHBOARD_API_ENDPOINT = "/elsa/api/dashboard/overview?range=24h&includeSystem=false"
 EXTENSION_PACKAGES = (
     "Elsa.Agents.",
     "Elsa.Logging.",
@@ -61,7 +62,11 @@ IMAGES: tuple[dict[str, Any], ...] = (
         "repository": "elsaworkflows/elsa-studio-blazor-wasm-app",
         "dockerfile": "src/Elsa.Studio.BlazorWasm/Dockerfile",
         "port": 8080,
-        "smokeAssets": ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"],
+        "smokeAssets": [
+            "/_framework/dotnet.js",
+            "/_framework/blazor.webassembly.js",
+            "/Elsa.Studio.BlazorWasm.Client.styles.css",
+        ],
         "assetsPath": "/app/elsa-project.assets.json",
         "packages": ["core", "studio", "extensions"],
         "aliases": [{"name": "studio-wasm-alias", "repository": "elsaworkflows/elsa-studio"}],
@@ -72,7 +77,11 @@ IMAGES: tuple[dict[str, Any], ...] = (
         "repository": "elsaworkflows/elsa-studio-blazor-wasm-standalone-app",
         "dockerfile": "src/Elsa.Studio.BlazorWasm.Client/Dockerfile",
         "port": 80,
-        "smokeAssets": ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"],
+        "smokeAssets": [
+            "/_framework/dotnet.js",
+            "/_framework/blazor.webassembly.js",
+            "/Elsa.Studio.BlazorWasm.Client.styles.css",
+        ],
         "assetsPath": "/usr/share/nginx/html/_framework/elsa-project.assets.json",
         "packages": ["core", "studio", "extensions"],
     },
@@ -488,39 +497,68 @@ def login_and_probe_api(url: str, username: str, password: str) -> dict[str, Any
     if login_status != 200 or not access_token:
         raise ReleaseError("Synthetic admin login did not return an access token")
 
-    endpoint = BEARER_API_ENDPOINT
-    probe = urllib.request.Request(
+    workflow_api = probe_bearer_json_api(url, BEARER_API_ENDPOINT, access_token)
+    result = workflow_api["body"]
+    items = result.get("items", result.get("Items")) if isinstance(result, dict) else None
+    total_count = result.get("totalCount", result.get("TotalCount")) if isinstance(result, dict) else None
+    if not isinstance(items, list) or not isinstance(total_count, int):
+        raise ReleaseError(
+            f"Bearer-authenticated workflow definitions API request to {BEARER_API_ENDPOINT} did not return a paged JSON response"
+        )
+
+    dashboard_api = probe_bearer_json_api(url, DASHBOARD_API_ENDPOINT, access_token)
+    dashboard = dashboard_api["body"]
+    if not isinstance(dashboard.get("runtime"), dict) or not isinstance(dashboard.get("workflowInstances"), dict):
+        raise ReleaseError(
+            f"Bearer-authenticated dashboard API request to {DASHBOARD_API_ENDPOINT} returned an unexpected JSON object"
+        )
+
+    return {
+        "identityLogin": {"status": login_status, "endpoint": "/elsa/api/identity/login"},
+        "bearerApi": {
+            "status": workflow_api["status"],
+            "endpoint": BEARER_API_ENDPOINT,
+            "contentType": workflow_api["contentType"],
+        },
+        "dashboardApi": {
+            "status": dashboard_api["status"],
+            "endpoint": DASHBOARD_API_ENDPOINT,
+            "contentType": dashboard_api["contentType"],
+        },
+    }
+
+
+def probe_bearer_json_api(url: str, endpoint: str, access_token: str) -> dict[str, Any]:
+    request = urllib.request.Request(
         f"{url.rstrip('/')}{endpoint}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
     try:
-        with urllib.request.urlopen(probe, timeout=15) as response:
-            api_status = response.status
+        with urllib.request.urlopen(request, timeout=15) as response:
+            status = response.status
             content_type = response.headers.get("Content-Type", "").lower()
-            result = json.loads(response.read())
+            body = json.loads(response.read())
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as error:
-        raise ReleaseError(
-            f"Bearer-authenticated workflow definitions API request to {endpoint} failed: {error}"
-        ) from error
+        raise ReleaseError(f"Bearer-authenticated API request to {endpoint} failed: {error}") from error
     except json.JSONDecodeError as error:
-        raise ReleaseError(
-            f"Bearer-authenticated workflow definitions API request to {endpoint} returned invalid JSON"
-        ) from error
-    items = result.get("items", result.get("Items")) if isinstance(result, dict) else None
-    total_count = result.get("totalCount", result.get("TotalCount")) if isinstance(result, dict) else None
-    if (
-        api_status != 200
-        or not content_type.startswith("application/json")
-        or not isinstance(items, list)
-        or not isinstance(total_count, int)
-    ):
-        raise ReleaseError(
-            f"Bearer-authenticated workflow definitions API request to {endpoint} did not return a paged JSON response"
-        )
-    return {
-        "identityLogin": {"status": login_status, "endpoint": "/elsa/api/identity/login"},
-        "bearerApi": {"status": api_status, "endpoint": endpoint},
-    }
+        raise ReleaseError(f"Bearer-authenticated API request to {endpoint} returned invalid JSON") from error
+    if status != 200 or not content_type.startswith("application/json") or not isinstance(body, dict):
+        raise ReleaseError(f"Bearer-authenticated API request to {endpoint} did not return a JSON object")
+    return {"status": status, "contentType": content_type, "body": body}
+
+
+def validate_smoke_asset_evidence(path: str, status: int, byte_count: int, content_type: str) -> None:
+    if status != 200 or byte_count < 100:
+        raise ReleaseError(f"Browser asset {path} returned HTTP {status} or only {byte_count} bytes")
+    is_css = path.lower().endswith(".css")
+    content_type = content_type.lower()
+    valid_content_type = (
+        content_type.startswith("text/css")
+        if is_css
+        else "javascript" in content_type or "ecmascript" in content_type
+    )
+    if not valid_content_type:
+        raise ReleaseError(f"Browser asset {path} has unexpected content type {content_type!r}")
 
 
 def verify_smoke_assets(url: str, asset_paths: Iterable[str]) -> list[dict[str, Any]]:
@@ -532,13 +570,10 @@ def verify_smoke_assets(url: str, asset_paths: Iterable[str]) -> list[dict[str, 
                 status = response.status
                 content_type = response.headers.get("Content-Type", "").lower()
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as error:
-            raise ReleaseError(f"Browser framework asset request for {path} failed: {error}") from error
-        if status != 200 or len(body) < 100:
-            raise ReleaseError(f"Browser framework asset {path} returned HTTP {status} or an empty body")
-        if "javascript" not in content_type and "ecmascript" not in content_type:
-            raise ReleaseError(f"Browser framework asset {path} has unexpected content type {content_type!r}")
+            raise ReleaseError(f"Browser asset request for {path} failed: {error}") from error
+        validate_smoke_asset_evidence(path, status, len(body), content_type)
         if body.lstrip().lower().startswith((b"<!doctype html", b"<html")):
-            raise ReleaseError(f"Browser framework asset {path} returned the HTML fallback page")
+            raise ReleaseError(f"Browser asset {path} returned the HTML fallback page")
         verified.append({"path": path, "status": status, "bytes": len(body), "contentType": content_type})
     return verified
 
@@ -789,19 +824,28 @@ def validate_fragment_evidence(
             browser_assets = row.get("browserAssets", [])
             if [asset.get("path") for asset in browser_assets] != image.get("smokeAssets", []):
                 raise ReleaseError(f"Image evidence for {image['name']} is missing browser framework assets on {platform}")
-            if any(
-                asset.get("status") != 200
-                or asset.get("bytes", 0) < 100
-                or ("javascript" not in asset.get("contentType", "") and "ecmascript" not in asset.get("contentType", ""))
-                for asset in browser_assets
-            ):
-                raise ReleaseError(f"Image evidence for {image['name']} contains a failed browser asset on {platform}")
+            try:
+                for asset in browser_assets:
+                    validate_smoke_asset_evidence(
+                        asset.get("path", ""),
+                        asset.get("status", 0),
+                        asset.get("bytes", 0),
+                        asset.get("contentType", ""),
+                    )
+            except ReleaseError as error:
+                raise ReleaseError(
+                    f"Image evidence for {image['name']} contains a failed browser asset on {platform}: {error}"
+                ) from error
             if image.get("smokeAuth"):
                 if (
                     row.get("identityLogin", {}).get("status") != 200
                     or row.get("bearerApi", {}).get("status") != 200
                     or row.get("identityLogin", {}).get("endpoint") != "/elsa/api/identity/login"
                     or row.get("bearerApi", {}).get("endpoint") != BEARER_API_ENDPOINT
+                    or row.get("bearerApi", {}).get("contentType", "").split(";", 1)[0] != "application/json"
+                    or row.get("dashboardApi", {}).get("status") != 200
+                    or row.get("dashboardApi", {}).get("endpoint") != DASHBOARD_API_ENDPOINT
+                    or row.get("dashboardApi", {}).get("contentType", "").split(";", 1)[0] != "application/json"
                 ):
                     raise ReleaseError(f"Image evidence for {image['name']} lacks successful authenticated API smoke")
 

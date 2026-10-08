@@ -58,9 +58,12 @@ class VersionAndSelectionTests(unittest.TestCase):
         for profile in ("studio-wasm", "studio-wasm-standalone", "server-studio-wasm"):
             with self.subTest(profile=profile):
                 image = release.parse_image_selection(profile)[0]
+                expected = ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"]
+                if profile in ("studio-wasm", "studio-wasm-standalone"):
+                    expected.append("/Elsa.Studio.BlazorWasm.Client.styles.css")
                 self.assertEqual(
                     image["smokeAssets"],
-                    ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"],
+                    expected,
                 )
 
     def test_publication_source_and_expected_commit_are_pinned(self):
@@ -224,7 +227,16 @@ def server_fragment():
             "httpStatus": 200,
             "browserAssets": [],
             "identityLogin": {"status": 200, "endpoint": "/elsa/api/identity/login"},
-            "bearerApi": {"status": 200, "endpoint": "/elsa/api/workflow-definitions?page=0&pageSize=1"},
+            "bearerApi": {
+                "status": 200,
+                "endpoint": release.BEARER_API_ENDPOINT,
+                "contentType": "application/json; charset=utf-8",
+            },
+            "dashboardApi": {
+                "status": 200,
+                "endpoint": release.DASHBOARD_API_ENDPOINT,
+                "contentType": "application/json; charset=utf-8",
+            },
         }
         for platform, digest in PLATFORMS.items()
     ]
@@ -238,6 +250,47 @@ def server_fragment():
         "smoke": {"success": True, "imageDigest": ROOT_DIGEST, "platforms": smoke_platforms},
         "resolvedPackages": {
             "core": [{"id": "Elsa", "version": "3.9.0"}],
+            "extensions": [{"id": "Elsa.Logging", "version": "3.9.0"}],
+        },
+    }
+
+
+def standalone_fragment():
+    image = release.parse_image_selection("studio-wasm-standalone")[0]
+    assets = [
+        {
+            "path": path,
+            "status": 200,
+            "bytes": 775 if path.endswith(".css") else 500,
+            "contentType": "text/css; charset=utf-8" if path.endswith(".css") else "application/javascript",
+        }
+        for path in image["smokeAssets"]
+    ]
+    platforms = [
+        {"platform": platform, "digest": digest}
+        for platform, digest in PLATFORMS.items()
+    ]
+    smoke_platforms = [
+        {
+            "platform": platform,
+            "imageDigest": digest,
+            "status": "success",
+            "httpStatus": 200,
+            "browserAssets": assets,
+        }
+        for platform, digest in PLATFORMS.items()
+    ]
+    return {
+        "id": image["id"],
+        "name": image["name"],
+        "repository": image["repository"],
+        "sourceRef": f"{image['repository']}:3.9.0-sha-{COMMIT}",
+        "digest": ROOT_DIGEST,
+        "platforms": platforms,
+        "smoke": {"success": True, "imageDigest": ROOT_DIGEST, "platforms": smoke_platforms},
+        "resolvedPackages": {
+            "core": [{"id": "Elsa", "version": "3.9.0"}],
+            "studio": [{"id": "Elsa.Studio", "version": "3.9.0"}],
             "extensions": [{"id": "Elsa.Logging", "version": "3.9.0"}],
         },
     }
@@ -294,16 +347,16 @@ class ImageArtifactSelectionTests(unittest.TestCase):
 
 
 class FinalizeEvidenceRejectionTests(unittest.TestCase):
-    def run_finalize_with_fragment(self, fragment):
+    def run_finalize_with_fragment(self, fragment, profile="server"):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        artifact_dir = root / f"container-image-server-12345-1"
+        artifact_dir = root / f"container-image-{profile}-12345-1"
         artifact_dir.mkdir()
-        (artifact_dir / "server.json").write_text(json.dumps(fragment), encoding="utf-8")
+        (artifact_dir / f"{profile}.json").write_text(json.dumps(fragment), encoding="utf-8")
         command = [
             "finalize", "--publication", "published", "--version", "3.9.0",
-            "--commit", COMMIT, "--source-ref", "refs/heads/main", "--images", "server",
+            "--commit", COMMIT, "--source-ref", "refs/heads/main", "--images", profile,
             "--core-version", "3.9.0", "--studio-version", "3.9.0", "--extensions-version", "3.9.0",
             "--event", "workflow_dispatch", "--repository", "elsa-workflows/elsa-apps",
             "--run-id", "12345", "--run-attempt", "2", "--expected-commit", COMMIT,
@@ -327,6 +380,23 @@ class FinalizeEvidenceRejectionTests(unittest.TestCase):
         fragment = server_fragment()
         fragment["resolvedPackages"]["core"][0]["version"] = "3.8.4"
         self.run_finalize_with_fragment(fragment)
+
+    def test_dashboard_html_fallback_is_rejected_before_any_tag_creation(self):
+        fragment = server_fragment()
+        fragment["smoke"]["platforms"][0]["dashboardApi"]["contentType"] = "text/html"
+        self.run_finalize_with_fragment(fragment)
+
+    def test_missing_standalone_stylesheet_is_rejected_before_any_tag_creation(self):
+        fragment = standalone_fragment()
+        for row in fragment["smoke"]["platforms"]:
+            row["browserAssets"] = [asset for asset in row["browserAssets"] if not asset["path"].endswith(".css")]
+        self.run_finalize_with_fragment(fragment, "studio-wasm-standalone")
+
+    def test_empty_standalone_stylesheet_is_rejected_before_any_tag_creation(self):
+        fragment = standalone_fragment()
+        for row in fragment["smoke"]["platforms"]:
+            next(asset for asset in row["browserAssets"] if asset["path"].endswith(".css"))["bytes"] = 99
+        self.run_finalize_with_fragment(fragment, "studio-wasm-standalone")
 
     def test_receipt_records_selected_earlier_evidence_attempt(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -389,6 +459,22 @@ class BrowserAssetSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseError, "HTML fallback page"):
                 release.verify_smoke_assets("http://127.0.0.1:1234", ["/_framework/dotnet.js"])
 
+    def test_verifies_standalone_stylesheet_content_type(self):
+        css = self.Response(b".studio { color: #fff; }".ljust(100, b" "), "text/css; charset=utf-8")
+        with patch.object(release.urllib.request, "urlopen", return_value=css):
+            verified = release.verify_smoke_assets(
+                "http://127.0.0.1:1234", ["/Elsa.Studio.BlazorWasm.Client.styles.css"]
+            )
+        self.assertEqual(verified[0]["contentType"], "text/css; charset=utf-8")
+
+    def test_rejects_empty_stylesheet(self):
+        css = self.Response(b"", "text/css; charset=utf-8")
+        with patch.object(release.urllib.request, "urlopen", return_value=css):
+            with self.assertRaisesRegex(release.ReleaseError, "only 0 bytes"):
+                release.verify_smoke_assets(
+                    "http://127.0.0.1:1234", ["/Elsa.Studio.BlazorWasm.Client.styles.css"]
+                )
+
 
 class AuthenticatedApiSmokeTests(unittest.TestCase):
     class Response:
@@ -410,11 +496,12 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
     def test_uses_bearer_protected_workflow_definitions_api_and_validates_paged_json(self):
         login = self.Response(b'{"accessToken":"synthetic-token"}')
         definitions = self.Response(b'{"items":[],"totalCount":0}')
+        dashboard = self.Response(b'{"runtime":{},"workflowInstances":{}}')
         requests = []
 
         def open_url(request, timeout):
             requests.append(request)
-            return (login, definitions)[len(requests) - 1]
+            return (login, definitions, dashboard)[len(requests) - 1]
 
         with patch.object(release.urllib.request, "urlopen", side_effect=open_url):
             result = release.login_and_probe_api("http://127.0.0.1:1234/", "smoke", "secret")
@@ -427,7 +514,13 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
         )
         self.assertEqual(requests[1].get_method(), "GET")
         self.assertEqual(requests[1].get_header("Authorization"), "Bearer synthetic-token")
+        self.assertEqual(
+            requests[2].full_url,
+            "http://127.0.0.1:1234/elsa/api/dashboard/overview?range=24h&includeSystem=false",
+        )
+        self.assertEqual(requests[2].get_header("Authorization"), "Bearer synthetic-token")
         self.assertEqual(result["bearerApi"]["status"], 200)
+        self.assertEqual(result["dashboardApi"]["status"], 200)
 
     def test_rejects_html_fallback_even_when_it_returns_http_200(self):
         login = self.Response(b'{"accessToken":"synthetic-token"}')
@@ -443,6 +536,22 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseError, "paged JSON response"):
                 release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
 
+    def test_rejects_dashboard_html_fallback_even_when_it_returns_http_200(self):
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        definitions = self.Response(b'{"items":[],"totalCount":0}')
+        fallback = self.Response(b'<!doctype html><html>Studio</html>', "text/html; charset=utf-8")
+        with patch.object(release.urllib.request, "urlopen", side_effect=[login, definitions, fallback]):
+            with self.assertRaisesRegex(release.ReleaseError, "dashboard/overview.*invalid JSON"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
+    def test_rejects_dashboard_json_without_dashboard_overview_shape(self):
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        definitions = self.Response(b'{"items":[],"totalCount":0}')
+        invalid = self.Response(b'{"message":"not the dashboard overview"}')
+        with patch.object(release.urllib.request, "urlopen", side_effect=[login, definitions, invalid]):
+            with self.assertRaisesRegex(release.ReleaseError, "dashboard/overview.*unexpected JSON object"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
     def test_login_and_api_timeouts_name_the_failed_endpoint(self):
         with patch.object(release.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
             with self.assertRaisesRegex(release.ReleaseError, "identity/login failed"):
@@ -450,7 +559,7 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
 
         login = self.Response(b'{"accessToken":"synthetic-token"}')
         with patch.object(release.urllib.request, "urlopen", side_effect=[login, TimeoutError("timed out")]):
-            with self.assertRaisesRegex(release.ReleaseError, "workflow definitions API request.*failed"):
+            with self.assertRaisesRegex(release.ReleaseError, "workflow-definitions.*failed"):
                 release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
 
     def test_asset_timeout_names_the_failed_asset(self):
