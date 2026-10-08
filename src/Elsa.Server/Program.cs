@@ -38,7 +38,7 @@ services.AddElsa(elsa =>
         .UseIdentity(identity =>
         {
             identity.TokenOptions = options => configuration.Bind("Identity:Tokens", options);
-            identity.UseAdminUserProvider();
+            identity.UseAdminUserProvider(options => configuration.GetSection("Identity:AdminUser").Bind(options));
         })
         .UseDefaultAuthentication(auth => auth.UseAdminApiKey())
         .UseWorkflowsApi()
