@@ -423,6 +423,19 @@ def image_reference(repository: str, tag: str) -> str:
     return f"{repository}:{tag}"
 
 
+def repository_from_reference(reference: str) -> str:
+    if not isinstance(reference, str) or not reference:
+        raise ReleaseError("Image reference must be a non-empty string")
+    name = reference.split("@", 1)[0]
+    last_slash = name.rfind("/")
+    last_colon = name.rfind(":")
+    if last_colon > last_slash:
+        name = name[:last_colon]
+    if not name or name.endswith("/"):
+        raise ReleaseError(f"Could not resolve repository from image reference {reference!r}")
+    return name
+
+
 def verify_manifest(reference: str, *, expected_digest: str | None = None) -> dict[str, Any]:
     manifest = inspect_manifest(reference)
     if manifest is None:
@@ -442,24 +455,35 @@ def verify_manifest(reference: str, *, expected_digest: str | None = None) -> di
 
 
 def verify_labels(reference: str, expected: dict[str, str], platforms: Iterable[str]) -> None:
-    for platform in platforms:
-        run_command(["docker", "pull", "--platform", platform, reference])
+    requested_platforms = tuple(platforms)
+    if len(requested_platforms) != len(REQUIRED_PLATFORMS) or set(requested_platforms) != set(REQUIRED_PLATFORMS):
+        raise ReleaseError(f"Label verification requires exactly these platforms: {list(REQUIRED_PLATFORMS)}")
+
+    manifest = verify_manifest(reference)
+    repository = repository_from_reference(reference)
+    for platform in REQUIRED_PLATFORMS:
+        platform_reference = f"{repository}@{manifest['platforms'][platform]}"
+        run_command(["docker", "pull", "--platform", platform, platform_reference])
         result = run_command(
-            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", reference]
+            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", platform_reference]
         )
         try:
             actual = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise ReleaseError(f"Could not read image labels from {reference}: {error}") from error
+            raise ReleaseError(f"Could not read image labels from {platform_reference}: {error}") from error
+        if not isinstance(actual, dict):
+            raise ReleaseError(f"Could not read image labels from {platform_reference}: expected a JSON object")
         for key, value in expected.items():
             if key == "org.opencontainers.image.ref.name":
                 allowed_refs = {"refs/heads/main", f"refs/tags/{expected['org.opencontainers.image.version']}"}
                 if actual.get(key) not in allowed_refs:
-                    raise ReleaseError(f"{reference} has an unapproved publication ref label: {actual.get(key)!r}")
+                    raise ReleaseError(
+                        f"{platform_reference} has an unapproved publication ref label: {actual.get(key)!r}"
+                    )
                 continue
             if actual.get(key) != value:
                 raise ReleaseError(
-                    f"{reference} label {key!r} is {actual.get(key)!r}; expected {value!r}"
+                    f"{platform_reference} label {key!r} is {actual.get(key)!r}; expected {value!r}"
                 )
 
 

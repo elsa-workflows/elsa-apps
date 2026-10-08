@@ -447,6 +447,81 @@ class ManifestPromotionTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in inspect.call_args_list], [candidate_ref, candidate_ref])
 
 
+class VerifyLabelsTests(unittest.TestCase):
+    def setUp(self):
+        self.packages = {family: "3.9.0" for family in ("core", "studio", "extensions")}
+        self.expected_labels = release.labels_for("3.9.0", COMMIT, "refs/heads/main", self.packages)
+        self.manifest = {"digest": ROOT_DIGEST, "platforms": PLATFORMS}
+
+    def test_pulls_each_platform_child_digest_for_tag_and_root_digest_references(self):
+        for reference in (
+            "registry.example:5443/team/elsa-server:3.9.0",
+            f"registry.example:5443/team/elsa-server@{ROOT_DIGEST}",
+        ):
+            with self.subTest(reference=reference):
+                commands = []
+
+                def run(command, **_kwargs):
+                    commands.append(command)
+                    return Mock(stdout=json.dumps(self.expected_labels))
+
+                with (
+                    patch.object(release, "verify_manifest", return_value=self.manifest),
+                    patch.object(release, "run_command", side_effect=run),
+                ):
+                    release.verify_labels(reference, self.expected_labels, release.REQUIRED_PLATFORMS)
+
+                repository = "registry.example:5443/team/elsa-server"
+                expected_commands = []
+                for platform in release.REQUIRED_PLATFORMS:
+                    child_reference = f"{repository}@{PLATFORMS[platform]}"
+                    expected_commands.extend((
+                        ["docker", "pull", "--platform", platform, child_reference],
+                        ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", child_reference],
+                    ))
+                self.assertEqual(commands, expected_commands)
+
+    def test_rejects_a_label_mismatch_from_the_platform_child(self):
+        actual_labels = dict(self.expected_labels)
+        actual_labels["org.opencontainers.image.version"] = "3.8.4"
+        with (
+            patch.object(release, "verify_manifest", return_value=self.manifest),
+            patch.object(release, "run_command", return_value=Mock(stdout=json.dumps(actual_labels))) as command,
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "org.opencontainers.image.version"):
+                release.verify_labels(
+                    "elsaworkflows/elsa-server-app:3.9.0",
+                    self.expected_labels,
+                    release.REQUIRED_PLATFORMS,
+                )
+
+        self.assertIn(PLATFORMS["linux/amd64"], command.call_args_list[1].args[0][-1])
+
+    def test_rejects_incomplete_manifest_before_pulling_any_platform(self):
+        incomplete = {"digest": ROOT_DIGEST, "platforms": {"linux/amd64": PLATFORMS["linux/amd64"]}}
+        with (
+            patch.object(release, "inspect_manifest", return_value=incomplete),
+            patch.object(release, "run_command") as command,
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "missing required platforms"):
+                release.verify_labels(
+                    "elsaworkflows/elsa-server-app:3.9.0",
+                    self.expected_labels,
+                    release.REQUIRED_PLATFORMS,
+                )
+        command.assert_not_called()
+
+    def test_requires_the_complete_supported_platform_set(self):
+        with patch.object(release, "verify_manifest") as verify_manifest:
+            with self.assertRaisesRegex(release.ReleaseError, "requires exactly these platforms"):
+                release.verify_labels(
+                    "elsaworkflows/elsa-server-app:3.9.0",
+                    self.expected_labels,
+                    ("linux/amd64",),
+                )
+        verify_manifest.assert_not_called()
+
+
 class SupersededPublicationTests(unittest.TestCase):
     def assert_archive_rejected(self, run, artifact, archive, packages, message):
         with self.assertRaisesRegex(release.ReleaseError, message):
