@@ -1272,6 +1272,8 @@ def load_superseded_publication(
         or not re.fullmatch(r"[0-9a-f]{40}", old_commit)
     ):
         raise ReleaseError("supersede_run_id is not a completed successful canonical main publication")
+    if old_commit == current_commit:
+        raise ReleaseError("A correction requires a new source commit containing the fix")
 
     # The prior source must be in the corrected source's history; the candidate itself must be in main.
     for ancestor, descendant, message in (

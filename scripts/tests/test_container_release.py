@@ -490,6 +490,23 @@ class SupersededPublicationTests(unittest.TestCase):
         )
         download.assert_called_once_with("repos/elsa-workflows/elsa-apps/actions/artifacts/812345/zip")
 
+    def test_loader_rejects_same_source_before_downloading_or_promoting(self):
+        _receipt, run, _artifact, _archive, packages = correction_fixture()
+        with (
+            patch.object(release, "github_api_json", return_value=run) as api,
+            patch.object(release, "github_api_artifact_zip") as download,
+            patch.object(release.subprocess, "run") as command,
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "requires a new source commit"):
+                release.load_superseded_publication(
+                    "424242", version="3.9.0", package_versions=packages,
+                    repository=release.APPS_REPOSITORY, current_run_id="777777",
+                    current_commit=run["head_sha"],
+                )
+        api.assert_called_once()
+        download.assert_not_called()
+        command.assert_not_called()
+
     def test_correction_retry_promotes_prior_refs_and_leaves_latest_tags_out(self):
         receipt, _run, _artifact, _archive, packages, prior, _supersedes = self.prior_publication()
         fragments = correction_fragments()
