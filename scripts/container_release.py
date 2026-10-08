@@ -1089,6 +1089,61 @@ def validate_receipt_platforms(value: Any, context: str) -> dict[str, str]:
     return {platform: platforms[platform] for platform in REQUIRED_PLATFORMS}
 
 
+def prior_publication_source_ref(run: dict[str, Any], version: str) -> str:
+    event = run.get("event")
+    head_branch = run.get("head_branch")
+    if event == "release":
+        if head_branch != version:
+            raise ReleaseError("Prior release event must target the exact version tag")
+        source_ref = f"refs/tags/{version}"
+    elif event == "workflow_dispatch":
+        if head_branch == "main":
+            source_ref = "refs/heads/main"
+        elif head_branch == version:
+            source_ref = f"refs/tags/{version}"
+        else:
+            raise ReleaseError("Prior dispatch must come from main or the matching version tag")
+    else:
+        raise ReleaseError("Prior publication must be a release or workflow_dispatch event")
+
+    # head_ref/ref are not included by every Actions API response, but reject them if present
+    # and inconsistent with the accepted branch/tag provenance.
+    if run.get("head_ref") not in (None, "", head_branch, source_ref):
+        raise ReleaseError("Prior run ref metadata does not match its accepted publication source")
+    if run.get("ref") not in (None, source_ref):
+        raise ReleaseError("Prior run ref metadata does not match its accepted publication source")
+    return source_ref
+
+
+def prior_workflow_inputs_match(
+    inputs: Any, *, event: str, version: str, old_commit: str
+) -> bool:
+    if not isinstance(inputs, dict):
+        return False
+    if event == "release":
+        return (
+            inputs.get("version") == ""
+            and inputs.get("publish") is False
+            and inputs.get("images") == ""
+            and all(inputs.get(f"{family}_version") == "" for family in ("core", "studio", "extensions"))
+            and inputs.get("expected_commit") == old_commit
+        )
+    image_selection = inputs.get("images")
+    if not isinstance(image_selection, str):
+        return False
+    try:
+        selects_all_images = parse_image_selection(image_selection) == list(IMAGES)
+    except ReleaseError:
+        return False
+    return (
+        inputs.get("version") == version
+        and inputs.get("publish") is True
+        and selects_all_images
+        and inputs.get("expected_commit") == old_commit
+        and all(inputs.get(f"{family}_version") == version for family in ("core", "studio", "extensions"))
+    )
+
+
 def validate_superseded_receipt(
     receipt: Any,
     *,
@@ -1106,6 +1161,8 @@ def validate_superseded_receipt(
     source = receipt.get("appsSource")
     prior_run = receipt.get("workflowRun")
     inputs = receipt.get("workflowInputs")
+    expected_source_ref = prior_publication_source_ref(run, version)
+    prior_event = run.get("event")
     if (
         not re.fullmatch(r"[0-9a-f]{40}", old_commit)
         or receipt.get("schemaVersion") != 1
@@ -1115,7 +1172,7 @@ def validate_superseded_receipt(
         or receipt.get("appsSourceCommit") != old_commit
         or not isinstance(source, dict)
         or source.get("commit") != old_commit
-        or source.get("ref") != "refs/heads/main"
+        or source.get("ref") != expected_source_ref
         or receipt.get("packageVersions") != package_versions
         or not isinstance(prior_run, dict)
         or prior_run.get("repository") != repository
@@ -1123,17 +1180,15 @@ def validate_superseded_receipt(
         or prior_run.get("runAttempt") != run_attempt
         or prior_run.get("workflow") != expected_workflow
         or prior_run.get("url") != run.get("html_url")
-        or prior_run.get("event") != "workflow_dispatch"
-        or prior_run.get("ref") != "refs/heads/main"
+        or prior_run.get("event") != prior_event
+        or prior_run.get("ref") != expected_source_ref
         or prior_run.get("headSha") != old_commit
         or prior_run.get("conclusion") != "success"
-        or not isinstance(inputs, dict)
-        or inputs.get("version") != version
-        or inputs.get("publish") is not True
-        or inputs.get("expected_commit") != old_commit
-        or any(inputs.get(f"{family}_version") != version for family in package_versions)
+        or not prior_workflow_inputs_match(
+            inputs, event=str(prior_event), version=version, old_commit=old_commit
+        )
     ):
-        raise ReleaseError("Prior receipt provenance does not match the successful full-version main publication")
+        raise ReleaseError("Prior receipt provenance does not match the successful full-version publication")
     expected_targets: dict[str, tuple[dict[str, Any], str | None]] = {}
     for image in IMAGES:
         expected_targets[image_reference(image["repository"], version)] = (image, None)
@@ -1189,8 +1244,8 @@ def validate_superseded_receipt(
             "runAttempt": run_attempt,
             "workflow": expected_workflow,
             "url": run.get("html_url"),
-            "event": "workflow_dispatch",
-            "ref": "refs/heads/main",
+            "event": prior_event,
+            "ref": expected_source_ref,
             "headSha": old_commit,
         },
         "appsSourceCommit": old_commit,
@@ -1239,7 +1294,9 @@ def validate_superseded_archive(
     if not isinstance(artifact_run, dict) or (
         str(artifact_run.get("id", "")) != str(run.get("id", ""))
         or artifact_run.get("head_sha") != run.get("head_sha")
-        or artifact_run.get("head_branch") != "main"
+        or artifact_run.get("head_branch") != run.get("head_branch")
+        or artifact_run.get("event") not in (None, run.get("event"))
+        or artifact_run.get("run_attempt") not in (None, run.get("run_attempt"))
     ):
         raise ReleaseError("Prior receipt artifact metadata does not match its workflow run")
     size = artifact.get("size_in_bytes")
@@ -1301,21 +1358,20 @@ def load_superseded_publication(
     run_repository = (run.get("repository") or {}).get("full_name")
     old_commit = str(run.get("head_sha", ""))
     attempt = run.get("run_attempt")
+    prior_source_ref = prior_publication_source_ref(run, version)
     if (
         str(run.get("id", "")) != run_id
         or run.get("status") != "completed"
         or run.get("conclusion") != "success"
-        or run.get("event") != "workflow_dispatch"
+        or run.get("event") not in ("release", "workflow_dispatch")
         or workflow_path != ".github/workflows/container-images.yml"
-        or run.get("head_branch") != "main"
-        or run.get("head_ref") not in (None, "", "refs/heads/main")
         or run_repository != repository
         or source_repository != repository
         or type(attempt) is not int
         or attempt < 1
         or not re.fullmatch(r"[0-9a-f]{40}", old_commit)
     ):
-        raise ReleaseError("supersede_run_id is not a completed successful canonical main publication")
+        raise ReleaseError("supersede_run_id is not a completed successful canonical full-version publication")
     if old_commit == current_commit:
         raise ReleaseError("A correction requires a new source commit containing the fix")
 

@@ -38,6 +38,17 @@ def args(**overrides):
     return argparse.Namespace(**values)
 
 
+def archive_receipt(receipt, artifact=None):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zipped:
+        zipped.writestr("container-release-receipt.json", json.dumps(receipt))
+    archive = buffer.getvalue()
+    if artifact is not None:
+        artifact["size_in_bytes"] = len(archive)
+        artifact["digest"] = "sha256:" + hashlib.sha256(archive).hexdigest()
+    return archive
+
+
 def correction_fixture():
     version = "3.9.0"
     prior_commit = "2" * 40
@@ -108,10 +119,7 @@ def correction_fixture():
         "publication": "published",
         "images": receipt_images,
     }
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as zipped:
-        zipped.writestr("container-release-receipt.json", json.dumps(receipt))
-    archive = buffer.getvalue()
+    archive = archive_receipt(receipt)
     run = {
         "id": int(run_id),
         "status": "completed",
@@ -134,6 +142,47 @@ def correction_fixture():
         "workflow_run": {"id": int(run_id), "head_sha": prior_commit, "head_branch": "main"},
     }
     return receipt, run, artifact, archive, package_versions
+
+
+def set_prior_publication_provenance(receipt, run, artifact, *, event, source_ref, images="all"):
+    version = receipt["releaseVersion"]
+    old_commit = receipt["appsSourceCommit"]
+    head_branch = source_ref.removeprefix("refs/heads/").removeprefix("refs/tags/")
+    receipt["appsSource"]["ref"] = source_ref
+    prior_run = receipt["workflowRun"]
+    prior_run.update(event=event, ref=source_ref)
+    if event == "release":
+        receipt["workflowInputs"].update(
+            version="",
+            publish=False,
+            images="",
+            core_version="",
+            studio_version="",
+            extensions_version="",
+            expected_commit=old_commit,
+        )
+    else:
+        receipt["workflowInputs"].update(
+            version=version,
+            publish=True,
+            images=images,
+            core_version=version,
+            studio_version=version,
+            extensions_version=version,
+            expected_commit=old_commit,
+        )
+
+    run.update(
+        event=event,
+        head_branch=head_branch,
+        head_ref=source_ref,
+        path=f".github/workflows/container-images.yml@{source_ref}",
+    )
+    artifact["workflow_run"].update(
+        head_branch=head_branch,
+    )
+
+    return archive_receipt(receipt, artifact)
 
 
 def correction_fragments():
@@ -399,6 +448,18 @@ class ManifestPromotionTests(unittest.TestCase):
 
 
 class SupersededPublicationTests(unittest.TestCase):
+    def assert_archive_rejected(self, run, artifact, archive, packages, message):
+        with self.assertRaisesRegex(release.ReleaseError, message):
+            release.validate_superseded_archive(
+                archive,
+                artifact,
+                expected_name=artifact["name"],
+                run=run,
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+            )
+
     def promote(self, registry, prior, receipt, packages, fragments, run_command):
         with (
             patch.object(release, "inspect_manifest", side_effect=registry.get),
@@ -437,6 +498,74 @@ class SupersededPublicationTests(unittest.TestCase):
         self.assertEqual(len(supersedes["references"]), 8)
         self.assertEqual(supersedes["receiptArtifact"]["id"], artifact["id"])
         self.assertEqual(supersedes["receiptArtifact"]["archiveDigest"], artifact["digest"])
+
+    def test_loader_accepts_release_and_matching_tag_dispatch_prior_publications(self):
+        for event, source_ref in (
+            ("release", "refs/tags/3.9.0"),
+            ("workflow_dispatch", "refs/tags/3.9.0"),
+        ):
+            with self.subTest(event=event, source_ref=source_ref):
+                receipt, run, artifact, _archive, packages = correction_fixture()
+                archive = set_prior_publication_provenance(
+                    receipt,
+                    run,
+                    artifact,
+                    event=event,
+                    source_ref=source_ref,
+                    images=(
+                        "server,studio-server,studio-wasm,studio-wasm-standalone,server-studio-server,server-studio-wasm"
+                        if event == "workflow_dispatch"
+                        else "all"
+                    ),
+                )
+                with (
+                    patch.object(
+                        release,
+                        "github_api_json",
+                        side_effect=[run, {"total_count": 1, "artifacts": [artifact]}],
+                    ),
+                    patch.object(release, "github_api_artifact_zip", return_value=archive),
+                    patch.object(release.subprocess, "run", return_value=Mock(returncode=0)),
+                ):
+                    _loaded, references, supersedes = release.load_superseded_publication(
+                        "424242",
+                        version="3.9.0",
+                        package_versions=packages,
+                        repository=release.APPS_REPOSITORY,
+                        current_run_id="777777",
+                        current_commit="3" * 40,
+                    )
+                self.assertEqual(len(references), 8)
+                self.assertEqual(supersedes["workflowRun"]["event"], event)
+                self.assertEqual(supersedes["workflowRun"]["ref"], source_ref)
+
+    def test_rejects_prior_run_from_a_different_tag(self):
+        receipt, run, artifact, _archive, packages = correction_fixture()
+        archive = set_prior_publication_provenance(
+            receipt, run, artifact, event="workflow_dispatch", source_ref="refs/tags/3.9.0"
+        )
+        run["head_branch"] = "3.8.4"
+        artifact["workflow_run"]["head_branch"] = "3.8.4"
+        self.assert_archive_rejected(run, artifact, archive, packages, "matching version tag")
+
+    def test_rejects_receipt_event_or_ref_that_disagrees_with_prior_run(self):
+        receipt, run, artifact, _archive, packages = correction_fixture()
+        set_prior_publication_provenance(
+            receipt, run, artifact, event="release", source_ref="refs/tags/3.9.0"
+        )
+        receipt["workflowRun"]["event"] = "workflow_dispatch"
+        archive = archive_receipt(receipt, artifact)
+        self.assert_archive_rejected(run, artifact, archive, packages, "provenance")
+
+        receipt["workflowRun"]["event"] = "release"
+        receipt["appsSource"]["ref"] = "refs/heads/main"
+        archive = archive_receipt(receipt, artifact)
+        self.assert_archive_rejected(run, artifact, archive, packages, "provenance")
+
+    def test_rejects_archive_run_metadata_that_disagrees_with_github_run(self):
+        _receipt, run, artifact, archive, packages = correction_fixture()
+        artifact["workflow_run"]["event"] = "release"
+        self.assert_archive_rejected(run, artifact, archive, packages, "artifact metadata")
 
     def test_rejects_tampered_digest_and_extra_archive_members(self):
         _receipt, run, artifact, archive, packages = correction_fixture()
