@@ -224,7 +224,7 @@ def server_fragment():
             "httpStatus": 200,
             "browserAssets": [],
             "identityLogin": {"status": 200, "endpoint": "/elsa/api/identity/login"},
-            "bearerApi": {"status": 200, "endpoint": "/elsa/api/identity/me/permissions"},
+            "bearerApi": {"status": 200, "endpoint": "/elsa/api/workflow-definitions?page=0&pageSize=1"},
         }
         for platform, digest in PLATFORMS.items()
     ]
@@ -390,6 +390,79 @@ class BrowserAssetSmokeTests(unittest.TestCase):
                 release.verify_smoke_assets("http://127.0.0.1:1234", ["/_framework/dotnet.js"])
 
 
+class AuthenticatedApiSmokeTests(unittest.TestCase):
+    class Response:
+        status = 200
+
+        def __init__(self, body, content_type="application/json"):
+            self.body = body
+            self.headers = {"Content-Type": content_type}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return self.body
+
+    def test_uses_bearer_protected_workflow_definitions_api_and_validates_paged_json(self):
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        definitions = self.Response(b'{"items":[],"totalCount":0}')
+        requests = []
+
+        def open_url(request, timeout):
+            requests.append(request)
+            return (login, definitions)[len(requests) - 1]
+
+        with patch.object(release.urllib.request, "urlopen", side_effect=open_url):
+            result = release.login_and_probe_api("http://127.0.0.1:1234/", "smoke", "secret")
+
+        self.assertEqual(requests[0].full_url, "http://127.0.0.1:1234/elsa/api/identity/login")
+        self.assertEqual(requests[0].get_method(), "POST")
+        self.assertEqual(
+            requests[1].full_url,
+            "http://127.0.0.1:1234/elsa/api/workflow-definitions?page=0&pageSize=1",
+        )
+        self.assertEqual(requests[1].get_method(), "GET")
+        self.assertEqual(requests[1].get_header("Authorization"), "Bearer synthetic-token")
+        self.assertEqual(result["bearerApi"]["status"], 200)
+
+    def test_rejects_html_fallback_even_when_it_returns_http_200(self):
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        fallback = self.Response(b'<!doctype html><html>Studio</html>', "text/html; charset=utf-8")
+        with patch.object(release.urllib.request, "urlopen", side_effect=[login, fallback]):
+            with self.assertRaisesRegex(release.ReleaseError, "invalid JSON"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
+    def test_rejects_non_paged_json_response(self):
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        invalid = self.Response(b'{"message":"not the workflow list"}')
+        with patch.object(release.urllib.request, "urlopen", side_effect=[login, invalid]):
+            with self.assertRaisesRegex(release.ReleaseError, "paged JSON response"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
+    def test_login_and_api_timeouts_name_the_failed_endpoint(self):
+        with patch.object(release.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
+            with self.assertRaisesRegex(release.ReleaseError, "identity/login failed"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        with patch.object(release.urllib.request, "urlopen", side_effect=[login, TimeoutError("timed out")]):
+            with self.assertRaisesRegex(release.ReleaseError, "workflow definitions API request.*failed"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
+    def test_asset_timeout_names_the_failed_asset(self):
+        with patch.object(
+            release.urllib.request,
+            "urlopen",
+            side_effect=TimeoutError("timed out"),
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "asset request for /_framework/dotnet.js failed"):
+                release.verify_smoke_assets("http://127.0.0.1:1234", ["/_framework/dotnet.js"])
+
+
 class SmokeCredentialTests(unittest.TestCase):
     def test_ephemeral_credentials_are_shared_with_login_without_command_line_exposure(self):
         with (
@@ -410,6 +483,26 @@ class SmokeCredentialTests(unittest.TestCase):
             self.assertEqual(probe.args[1:], (environment["Identity__AdminUser__UserName"], password))
         self.assertEqual(len(passwords), 2)
         self.assertNotEqual(*passwords)
+
+    def test_smoke_errors_include_image_and_platform_without_credentials(self):
+        with (
+            patch.object(release.secrets, "token_urlsafe", return_value="known-smoke-password"),
+            patch.object(release, "run_command", return_value=Mock(stdout="test-container")),
+            patch.object(release, "wait_for_http", return_value=("http://127.0.0.1:1234/", 200)),
+            patch.object(release, "login_and_probe_api", side_effect=release.ReleaseError("API request timed out")),
+        ):
+            with self.assertRaisesRegex(
+                release.ReleaseError,
+                r"registry/image:3\.8\.4 on linux/arm64: API request timed out",
+            ) as error:
+                release.smoke_image(
+                    "registry/image:3.8.4",
+                    "linux/arm64",
+                    8080,
+                    auth_enabled=True,
+                )
+        self.assertNotIn("known-smoke-password", str(error.exception))
+        self.assertNotIn("container-smoke", str(error.exception))
 
 
 if __name__ == "__main__":
