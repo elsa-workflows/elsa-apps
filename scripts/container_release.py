@@ -24,6 +24,7 @@ _PRERELEASE_ID = rf"(?:{_NUM}|(?:[0-9]*[A-Za-z-][0-9A-Za-z-]*))"
 ELSA_VERSION = re.compile(rf"^3\.{_NUM}\.{_NUM}(?:-{_PRERELEASE_ID}(?:\.{_PRERELEASE_ID})*)?$")
 REQUIRED_PLATFORMS = ("linux/amd64", "linux/arm64")
 APPS_REPOSITORY = "elsa-workflows/elsa-apps"
+BEARER_API_ENDPOINT = "/elsa/api/workflow-definitions?page=0&pageSize=1"
 EXTENSION_PACKAGES = (
     "Elsa.Agents.",
     "Elsa.Logging.",
@@ -479,27 +480,46 @@ def login_and_probe_api(url: str, username: str, password: str) -> dict[str, Any
         with urllib.request.urlopen(login_request, timeout=15) as response:
             login_status = response.status
             login = json.loads(response.read())
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as error:
-        raise ReleaseError(f"Synthetic admin login failed: {error}") from error
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as error:
+        raise ReleaseError(
+            f"Synthetic admin login request to /elsa/api/identity/login failed: {error}"
+        ) from error
     access_token = login.get("accessToken") or login.get("AccessToken")
     if login_status != 200 or not access_token:
         raise ReleaseError("Synthetic admin login did not return an access token")
 
+    endpoint = BEARER_API_ENDPOINT
     probe = urllib.request.Request(
-        f"{api_root}/identity/me/permissions",
+        f"{url.rstrip('/')}{endpoint}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
     try:
         with urllib.request.urlopen(probe, timeout=15) as response:
             api_status = response.status
-            response.read()
-    except (urllib.error.URLError, urllib.error.HTTPError) as error:
-        raise ReleaseError(f"Bearer-authenticated identity API probe failed: {error}") from error
-    if api_status != 200:
-        raise ReleaseError(f"Bearer-authenticated identity API returned HTTP {api_status}")
+            content_type = response.headers.get("Content-Type", "").lower()
+            result = json.loads(response.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as error:
+        raise ReleaseError(
+            f"Bearer-authenticated workflow definitions API request to {endpoint} failed: {error}"
+        ) from error
+    except json.JSONDecodeError as error:
+        raise ReleaseError(
+            f"Bearer-authenticated workflow definitions API request to {endpoint} returned invalid JSON"
+        ) from error
+    items = result.get("items", result.get("Items")) if isinstance(result, dict) else None
+    total_count = result.get("totalCount", result.get("TotalCount")) if isinstance(result, dict) else None
+    if (
+        api_status != 200
+        or not content_type.startswith("application/json")
+        or not isinstance(items, list)
+        or not isinstance(total_count, int)
+    ):
+        raise ReleaseError(
+            f"Bearer-authenticated workflow definitions API request to {endpoint} did not return a paged JSON response"
+        )
     return {
         "identityLogin": {"status": login_status, "endpoint": "/elsa/api/identity/login"},
-        "bearerApi": {"status": api_status, "endpoint": "/elsa/api/identity/me/permissions"},
+        "bearerApi": {"status": api_status, "endpoint": endpoint},
     }
 
 
@@ -511,8 +531,8 @@ def verify_smoke_assets(url: str, asset_paths: Iterable[str]) -> list[dict[str, 
                 body = response.read()
                 status = response.status
                 content_type = response.headers.get("Content-Type", "").lower()
-        except (urllib.error.URLError, urllib.error.HTTPError) as error:
-            raise ReleaseError(f"Browser framework asset {path} is unavailable: {error}") from error
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as error:
+            raise ReleaseError(f"Browser framework asset request for {path} failed: {error}") from error
         if status != 200 or len(body) < 100:
             raise ReleaseError(f"Browser framework asset {path} returned HTTP {status} or an empty body")
         if "javascript" not in content_type and "ecmascript" not in content_type:
@@ -550,23 +570,24 @@ def smoke_image(
         if auth_enabled
         else []
     )
-    run = run_command(
-        [
-            "docker",
-            "run",
-            "--detach",
-            *platform_args,
-            "--publish",
-            f"127.0.0.1::{port}",
-            "--env",
-            "ASPNETCORE_ENVIRONMENT=Production",
-            *auth_args,
-            reference,
-        ],
-        env=run_env,
-    )
-    container_id = run.stdout.strip()
+    container_id = ""
     try:
+        run = run_command(
+            [
+                "docker",
+                "run",
+                "--detach",
+                *platform_args,
+                "--publish",
+                f"127.0.0.1::{port}",
+                "--env",
+                "ASPNETCORE_ENVIRONMENT=Production",
+                *auth_args,
+                reference,
+            ],
+            env=run_env,
+        )
+        container_id = run.stdout.strip()
         url, status = wait_for_http(container_id, port)
         image_digest = image_digest or (reference.rsplit("@", 1)[-1] if "@" in reference else reference)
         result = {
@@ -580,8 +601,11 @@ def smoke_image(
         if auth_enabled:
             result.update(login_and_probe_api(url, username, password))
         return result
+    except ReleaseError as error:
+        raise ReleaseError(f"Smoke test failed for {reference} on {platform}: {error}") from error
     finally:
-        run_command(["docker", "rm", "--force", container_id], check=False)
+        if container_id:
+            run_command(["docker", "rm", "--force", container_id], check=False)
 
 
 def verify_registry_image(
@@ -777,7 +801,7 @@ def validate_fragment_evidence(
                     row.get("identityLogin", {}).get("status") != 200
                     or row.get("bearerApi", {}).get("status") != 200
                     or row.get("identityLogin", {}).get("endpoint") != "/elsa/api/identity/login"
-                    or row.get("bearerApi", {}).get("endpoint") != "/elsa/api/identity/me/permissions"
+                    or row.get("bearerApi", {}).get("endpoint") != BEARER_API_ENDPOINT
                 ):
                     raise ReleaseError(f"Image evidence for {image['name']} lacks successful authenticated API smoke")
 
