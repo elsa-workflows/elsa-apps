@@ -10,6 +10,7 @@
         <PackageReference Include="Elsa.Expressions.Liquid"/>
         <PackageReference Include="Elsa.Scheduling"/>
         <PackageReference Include="Elsa.Workflows.Api"/>
+        <PackageReference Include="Elsa.Workflows.Runtime.Dashboard"/>
         <PackageReference Include="Elsa.Workflows.Runtime.Distributed"/>
     </ItemGroup>
 

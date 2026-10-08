@@ -574,11 +574,7 @@ def login_and_probe_api(url: str, username: str, password: str) -> dict[str, Any
         )
 
     dashboard_api = probe_bearer_json_api(url, DASHBOARD_API_ENDPOINT, access_token)
-    dashboard = dashboard_api["body"]
-    if not isinstance(dashboard.get("runtime"), dict) or not isinstance(dashboard.get("workflowInstances"), dict):
-        raise ReleaseError(
-            f"Bearer-authenticated dashboard API request to {DASHBOARD_API_ENDPOINT} returned an unexpected JSON object"
-        )
+    dashboard_evidence = validate_dashboard_overview(dashboard_api["body"])
 
     return {
         "identityLogin": {"status": login_status, "endpoint": "/elsa/api/identity/login"},
@@ -591,7 +587,37 @@ def login_and_probe_api(url: str, username: str, password: str) -> dict[str, Any
             "status": dashboard_api["status"],
             "endpoint": DASHBOARD_API_ENDPOINT,
             "contentType": dashboard_api["contentType"],
+            **dashboard_evidence,
         },
+    }
+
+
+def validate_dashboard_overview(body: dict[str, Any]) -> dict[str, Any]:
+    runtime = body.get("runtime")
+    workflow_instances = body.get("workflowInstances")
+    if not isinstance(runtime, dict) or not isinstance(workflow_instances, dict):
+        raise ReleaseError(
+            f"Bearer-authenticated dashboard API request to {DASHBOARD_API_ENDPOINT} returned an unexpected JSON object"
+        )
+
+    runtime_status = runtime.get("status")
+    is_accepting_work = runtime.get("isAcceptingWork")
+    metric_names = ("running", "completed", "faulted", "suspended", "interrupted", "incidentBearing")
+    metrics = {name: workflow_instances.get(name) for name in metric_names}
+    if (
+        runtime_status != "AcceptingWork"
+        or is_accepting_work is not True
+        or any(type(value) is not int or value < 0 for value in metrics.values())
+    ):
+        raise ReleaseError(
+            f"Bearer-authenticated dashboard API request to {DASHBOARD_API_ENDPOINT} did not report an accepting workflow runtime and metrics"
+        )
+
+    return {
+        "runtimeStatus": runtime_status,
+        "isAcceptingWork": is_accepting_work,
+        "workflowMetricsValid": True,
+        "running": metrics["running"],
     }
 
 
@@ -913,6 +939,11 @@ def validate_fragment_evidence(
                     or row.get("dashboardApi", {}).get("status") != 200
                     or row.get("dashboardApi", {}).get("endpoint") != DASHBOARD_API_ENDPOINT
                     or row.get("dashboardApi", {}).get("contentType", "").split(";", 1)[0] != "application/json"
+                    or row.get("dashboardApi", {}).get("runtimeStatus") != "AcceptingWork"
+                    or row.get("dashboardApi", {}).get("isAcceptingWork") is not True
+                    or row.get("dashboardApi", {}).get("workflowMetricsValid") is not True
+                    or type(row.get("dashboardApi", {}).get("running")) is not int
+                    or row.get("dashboardApi", {}).get("running", -1) < 0
                 ):
                     raise ReleaseError(f"Image evidence for {image['name']} lacks successful authenticated API smoke")
 

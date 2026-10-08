@@ -21,6 +21,7 @@ services
         .UseDefaultAuthentication()
         .UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
         .UseWorkflowRuntime(runtime => runtime.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))
+        .UseWorkflowRuntimeDashboard()
         .UseScheduling()
         .UseJavaScript()
         .UseLiquid()

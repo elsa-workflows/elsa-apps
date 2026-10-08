@@ -17,6 +17,7 @@
         <PackageReference Include="Elsa.Scheduling"/>
         <PackageReference Include="Elsa.Workflows.Api"/>
         <PackageReference Include="Elsa.Workflows.Runtime"/>
+        <PackageReference Include="Elsa.Workflows.Runtime.Dashboard"/>
         <PackageReference Include="Elsa.Workflows.Runtime.Distributed"/>
     </ItemGroup>
 
@@ -30,6 +31,7 @@
         <PackageReference Include="Elsa.Studio.Login.BlazorServer"/>
         <PackageReference Include="Elsa.Studio.Http.Webhooks"/>
         <PackageReference Include="Elsa.Studio.WorkflowContexts"/>
+        <PackageReference Include="Elsa.Studio.Workflows.Dashboard"/>
     </ItemGroup>
 
     <ItemGroup>

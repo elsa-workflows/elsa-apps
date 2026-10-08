@@ -15,6 +15,7 @@ using Elsa.Studio.Login.HttpMessageHandlers;
 using Elsa.Studio.Models;
 using Elsa.Studio.Shell.Extensions;
 using Elsa.Studio.Http.Webhooks.Extensions;
+using Elsa.Studio.Workflows.Dashboard.Extensions;
 using Elsa.Studio.Workflows.Designer.Extensions;
 using Elsa.Studio.Workflows.Extensions;
 using Elsa.Workflows.Runtime.Distributed.Extensions;
@@ -41,6 +42,7 @@ services
             runtime.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration));
             runtime.UseDistributedRuntime();
         })
+        .UseWorkflowRuntimeDashboard()
         .UseScheduling()
         .UseJavaScript()
         .UseLiquid()
@@ -87,6 +89,7 @@ services.AddShell();
 services.AddRemoteBackend(backendApiConfig);
 services.AddLoginModule().UseElsaIdentity();
 services.AddDashboardModule(backendApiConfig);
+services.AddWorkflowsDashboardModule();
 services.AddWorkflowsModule();
 services.AddWebhooksModule();
 services.AddAgentsModule(backendApiConfig);
