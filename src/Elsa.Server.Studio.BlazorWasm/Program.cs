@@ -16,7 +16,7 @@ services
         .UseIdentity(identity =>
         {
             identity.TokenOptions = options => configuration.GetSection("Identity:Tokens").Bind(options);
-            identity.UseAdminUserProvider();
+            identity.UseAdminUserProvider(options => configuration.GetSection("Identity:AdminUser").Bind(options));
         })
         .UseDefaultAuthentication()
         .UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))

@@ -4,7 +4,6 @@ using Elsa.Identity;
 using Elsa.Logging.Extensions;
 using Elsa.Persistence.EFCore.Modules.Management;
 using Elsa.Persistence.EFCore.Modules.Runtime;
-using Elsa.Requirements;
 using Elsa.Studio.Core.BlazorServer.Extensions;
 using Elsa.Studio.Dashboard.Extensions;
 using Elsa.Studio.Extensions;
@@ -33,7 +32,7 @@ services
         .UseIdentity(identity =>
         {
             identity.TokenOptions = options => configuration.GetSection("Identity:Tokens").Bind(options);
-            identity.UseAdminUserProvider();
+            identity.UseAdminUserProvider(options => configuration.GetSection("Identity:AdminUser").Bind(options));
         })
         .UseDefaultAuthentication()
         .UseWorkflowManagement(management => management.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCore(ef, configuration)))

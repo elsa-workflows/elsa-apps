@@ -31,26 +31,40 @@ This will allow users to run Elsa Workflow Servers and Elsa Studio apps as prebu
 
 ## Getting Started
 
-Each project includes a `Dockerfile`. You can build and run them as follows:
+Build from the repository root so the Dockerfile can copy the shared package and build configuration:
 
 ```bash
-# Example: build and run the Elsa Server image
-docker build -t elsa-server ./src/Elsa.Server
-docker run -d -p 5000:8080 --name elsa-server elsa-server \
-       -e HTTP__BASEURL=http://localhost:5000 \
-       -e DATABASEPROVIDER=SqlServer \
-       -e CONNECTIONSTRINGS__DEFAULT="Server=localhost;Database=Elsa;User Id=sa;Password=!" 
-````
+# Example: build and run the Elsa Server image with persistent SQLite storage
+docker build -f src/Elsa.Server/Dockerfile -t elsa-server-app .
+docker run -d -p 5000:8080 --name elsa-server \
+       -e Http__BaseUrl=http://localhost:5000 \
+       -e Identity__AdminUser__UserName=admin \
+       -e Identity__AdminUser__Password='use-a-secret-password' \
+       -e ConnectionStrings__Sqlite='Data Source=/data/elsa.sqlite.db;cache=shared' \
+       -v "$PWD/data:/data" \
+       elsa-server-app
+```
 
 ## Using Docker Images from Docker Hub
 
 ```bash
-# Example: run the Elsa Server image
-docker run --rm -p 5000:8080 elsaworkflows/elsa-server-blazor-server-app:latest \
-       -e HTTP__BASEURL=http://localhost:5000 \
-       -e DATABASEPROVIDER=SqlServer \
-       -e CONNECTIONSTRINGS__DEFAULT="Server=localhost;Database=Elsa;User Id=sa;Password=!"
+# Example: run the Elsa Server image for Elsa 3.9.0
+docker run --rm -p 5000:8080 \
+       -e Http__BaseUrl=http://localhost:5000 \
+       -e Identity__AdminUser__UserName=admin \
+       -e Identity__AdminUser__Password='use-a-secret-password' \
+       -e ConnectionStrings__Sqlite='Data Source=/data/elsa.sqlite.db;cache=shared' \
+       -v "$PWD/data:/data" \
+       elsaworkflows/elsa-server-app:3.9.0
 ```
+
+The example uses SQLite, which is the configured default and the database path covered by the container smoke checks. MySQL provider builds currently report `NU1608` because the Pomelo EF Core 9 package is paired with EF Core 10; the MySQL combination has not been validated for these images.
+
+Each Elsa Apps release publishes an exact version tag and a source-specific tag containing the Apps commit SHA for all six applications. Supported release tags are derived from the workflow input and must be Elsa 3.x SemVer versions. The hosted Studio WASM image also receives the matching `elsaworkflows/elsa-studio:<version>` alias, and the server image receives `elsaworkflows/elsa-server:<version>`. These aliases are limited to Elsa 3 release tags; the workflow does not update `latest` or Elsa 4 tags.
+
+The shared [container image workflow](.github/workflows/container-images.yml) builds all six images for pull-request validation without pushing. A manual run defaults to build-only. Publishing requires `publish: true`, a reviewed `main` or matching release-tag ref, the pinned full `expected_commit`, exact package versions for every selected image family, and either `all` or a comma-separated subset of these profile names: `server`, `studio-server`, `studio-wasm`, `studio-wasm-standalone`, `server-studio-server`, and `server-studio-wasm`. A published GitHub release tag builds and publishes the full image set automatically. The workflow validates every selected image's platform manifests and restored package assets, starts the image on each platform, verifies Blazor browser assets, and tests the server login and bearer-authenticated API on server hosts before creating version tags and the machine-readable receipt artifact.
+
+Studio deployments should set the backend URL using `Backend__Url`, which is injected into the hosted client configuration as `window.elsaConfig.backendUrl`.
 
 ## License
 

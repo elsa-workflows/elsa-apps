@@ -1,0 +1,1280 @@
+#!/usr/bin/env python3
+"""Build, verify, and publish versioned Elsa Apps container images."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Any, Iterable
+
+
+_NUM = r"(?:0|[1-9][0-9]*)"
+_PRERELEASE_ID = rf"(?:{_NUM}|(?:[0-9]*[A-Za-z-][0-9A-Za-z-]*))"
+ELSA_VERSION = re.compile(rf"^3\.{_NUM}\.{_NUM}(?:-{_PRERELEASE_ID}(?:\.{_PRERELEASE_ID})*)?$")
+REQUIRED_PLATFORMS = ("linux/amd64", "linux/arm64")
+APPS_REPOSITORY = "elsa-workflows/elsa-apps"
+EXTENSION_PACKAGES = (
+    "Elsa.Agents.",
+    "Elsa.Logging.",
+    "Elsa.Studio.Agents",
+    "Elsa.Studio.Http.Webhooks",
+    "Elsa.Studio.WorkflowContexts",
+)
+
+IMAGES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "server",
+        "name": "server",
+        "repository": "elsaworkflows/elsa-server-app",
+        "dockerfile": "src/Elsa.Server/Dockerfile",
+        "port": 8080,
+        "assetsPath": "/app/elsa-project.assets.json",
+        "packages": ["core", "extensions"],
+        "smokeAuth": True,
+        "aliases": [{"name": "server-alias", "repository": "elsaworkflows/elsa-server"}],
+    },
+    {
+        "id": "studio-server",
+        "name": "studio-server",
+        "repository": "elsaworkflows/elsa-studio-blazor-server-app",
+        "dockerfile": "src/Elsa.Studio.BlazorServer/Dockerfile",
+        "port": 8080,
+        "smokeAssets": ["/_framework/blazor.server.js"],
+        "assetsPath": "/app/elsa-project.assets.json",
+        "packages": ["core", "studio", "extensions"],
+    },
+    {
+        "id": "studio-wasm",
+        "name": "studio-wasm",
+        "repository": "elsaworkflows/elsa-studio-blazor-wasm-app",
+        "dockerfile": "src/Elsa.Studio.BlazorWasm/Dockerfile",
+        "port": 8080,
+        "smokeAssets": ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"],
+        "assetsPath": "/app/elsa-project.assets.json",
+        "packages": ["core", "studio", "extensions"],
+        "aliases": [{"name": "studio-wasm-alias", "repository": "elsaworkflows/elsa-studio"}],
+    },
+    {
+        "id": "studio-wasm-standalone",
+        "name": "studio-wasm-standalone",
+        "repository": "elsaworkflows/elsa-studio-blazor-wasm-standalone-app",
+        "dockerfile": "src/Elsa.Studio.BlazorWasm.Client/Dockerfile",
+        "port": 80,
+        "smokeAssets": ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"],
+        "assetsPath": "/usr/share/nginx/html/_framework/elsa-project.assets.json",
+        "packages": ["core", "studio", "extensions"],
+    },
+    {
+        "id": "server-studio-server",
+        "name": "server-studio-server",
+        "repository": "elsaworkflows/elsa-server-studio-blazor-server-app",
+        "dockerfile": "src/Elsa.Server.Studio.BlazorServer/Dockerfile",
+        "port": 8080,
+        "smokeAssets": ["/_framework/blazor.server.js"],
+        "assetsPath": "/app/elsa-project.assets.json",
+        "packages": ["core", "studio", "extensions"],
+        "smokeAuth": True,
+    },
+    {
+        "id": "server-studio-wasm",
+        "name": "server-studio-wasm",
+        "repository": "elsaworkflows/elsa-server-studio-blazor-wasm-app",
+        "dockerfile": "src/Elsa.Server.Studio.BlazorWasm/Dockerfile",
+        "port": 8080,
+        "smokeAssets": ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"],
+        "assetsPath": "/app/elsa-project.assets.json",
+        "packages": ["core", "studio", "extensions"],
+        "smokeAuth": True,
+    },
+)
+
+
+class ReleaseError(RuntimeError):
+    """Raised when release inputs or image evidence fail validation."""
+
+
+def validate_inventory(images: Iterable[dict[str, Any]] = IMAGES) -> None:
+    entries = list(images)
+    if len(entries) != 6:
+        raise ReleaseError(f"Expected six application images, found {len(entries)}")
+
+    ids = [item.get("id") for item in entries]
+    repositories = [item.get("repository") for item in entries]
+    dockerfiles = [item.get("dockerfile") for item in entries]
+    if len(set(ids)) != 6 or len(set(repositories)) != 6 or len(set(dockerfiles)) != 6:
+        raise ReleaseError("Image ids, repositories, and Dockerfiles must be unique")
+
+    aliases = {
+        item["id"]: alias["repository"]
+        for item in entries
+        for alias in item.get("aliases", [])
+    }
+    expected = {
+        "studio-wasm": "elsaworkflows/elsa-studio",
+        "server": "elsaworkflows/elsa-server",
+    }
+    if aliases != expected:
+        raise ReleaseError(f"Image aliases do not match the release contract: {aliases}")
+
+    for item in entries:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", str(item.get("id", ""))):
+            raise ReleaseError(f"Invalid image id: {item.get('id')!r}")
+        if not Path(str(item.get("dockerfile", ""))).is_file():
+            raise ReleaseError(f"Dockerfile does not exist: {item.get('dockerfile')}")
+        if item.get("port") not in (80, 8080):
+            raise ReleaseError(f"Unsupported smoke-test port for {item.get('id')}")
+
+
+def read_package_versions(path: Path) -> dict[str, str]:
+    root = ET.parse(path).getroot()
+    values: dict[str, str] = {}
+    for name in ("ElsaVersion", "ElsaStudioVersion", "ElsaExtensionsVersion"):
+        node = root.find(f".//{name}")
+        if node is None or not node.text:
+            raise ReleaseError(f"Missing {name} in {path}")
+        values[name] = node.text.strip()
+    for family, version in values.items():
+        if not is_elsa_version(version):
+            raise ReleaseError(f"Unsupported {family} package version: {version!r}")
+    return values
+
+
+def normalize_bool(value: str | bool | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def is_elsa_version(version: str) -> bool:
+    return bool(ELSA_VERSION.fullmatch(version))
+
+
+def parse_image_selection(selection: str, images: Iterable[dict[str, Any]] = IMAGES) -> list[dict[str, Any]]:
+    entries = list(images)
+    if selection.strip().lower() in ("", "all"):
+        return entries
+    requested = [name.strip() for name in selection.split(",") if name.strip()]
+    if not requested or len(requested) != len(set(requested)):
+        raise ReleaseError("Image selection must contain unique comma-separated profile names")
+    by_name = {item["name"]: item for item in entries}
+    unknown = set(requested) - set(by_name)
+    if unknown:
+        raise ReleaseError(f"Unknown image profile name(s): {', '.join(sorted(unknown))}")
+    return [item for item in entries if item["name"] in requested]
+
+
+def package_families_for(images: Iterable[dict[str, Any]]) -> set[str]:
+    return {family for image in images for family in image["packages"]}
+
+
+def validate_publication(event: str, version: str, publish: bool, ref: str, release_tag: str = "") -> None:
+    if not is_elsa_version(version):
+        raise ReleaseError(f"Expected a strict Elsa 3.x SemVer release version, got {version!r}")
+
+    if event == "pull_request":
+        if publish:
+            raise ReleaseError("Pull requests cannot publish container images")
+        return
+
+    if event == "release":
+        if release_tag != version or ref != f"refs/tags/{version}":
+            raise ReleaseError("Published release tag and workflow ref must match the exact version")
+        if not publish:
+            raise ReleaseError("A published release event must publish its container images")
+        return
+
+    if event == "workflow_dispatch":
+        if publish and ref not in ("refs/heads/main", f"refs/tags/{version}"):
+            raise ReleaseError("Publishing is allowed only from main or the matching release tag")
+        return
+
+    raise ReleaseError(f"Unsupported workflow event: {event!r}")
+
+
+def resolve_run(args: argparse.Namespace) -> dict[str, Any]:
+    packages = read_package_versions(Path(args.packages))
+    event = args.event
+    publish = False
+
+    selection = "all" if event == "release" else args.images
+    selected_images = parse_image_selection(selection)
+    required_families = package_families_for(selected_images)
+
+    if event == "pull_request":
+        version = packages["ElsaVersion"]
+    elif event == "release":
+        version = args.release_tag
+        publish = True
+        mismatched = {family: package for family, package in packages.items() if package != version}
+        if mismatched:
+            values = ", ".join(f"{family}={package}" for family, package in mismatched.items())
+            raise ReleaseError(f"Published release package versions must match tag {version}: {values}")
+    elif event == "workflow_dispatch":
+        version = args.version
+        publish = normalize_bool(args.publish)
+    else:
+        raise ReleaseError(f"Unsupported workflow event: {event!r}")
+
+    if publish and event == "workflow_dispatch":
+        input_names = {"core": "core_version", "studio": "studio_version", "extensions": "extensions_version"}
+        missing = [input_names[family] for family in sorted(required_families) if not getattr(args, input_names[family])]
+        if missing:
+            raise ReleaseError(f"Published dispatch requires explicit versions for selected package families: {', '.join(missing)}")
+        if not re.fullmatch(r"[0-9a-f]{40}", getattr(args, "expected_commit", "")):
+            raise ReleaseError("Published dispatch requires expected_commit as a full 40-character lowercase Git SHA")
+        if args.expected_commit != args.commit:
+            raise ReleaseError("Published dispatch expected_commit must equal the checked-out workflow commit")
+
+    validate_publication(event, version, publish, args.ref, args.release_tag)
+    if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
+        raise ReleaseError("Source commit must be a full 40-character lowercase Git SHA")
+
+    if event == "workflow_dispatch":
+        packages = {
+            "ElsaVersion": getattr(args, "core_version") or packages["ElsaVersion"],
+            "ElsaStudioVersion": getattr(args, "studio_version") or packages["ElsaStudioVersion"],
+            "ElsaExtensionsVersion": getattr(args, "extensions_version") or packages["ElsaExtensionsVersion"],
+        }
+        for family, package_version in packages.items():
+            if not is_elsa_version(package_version):
+                raise ReleaseError(f"Unsupported {family} package version: {package_version!r}")
+
+    return {
+        "version": version,
+        "publish": publish,
+        "sourceRef": args.ref,
+        "sourceCommit": args.commit,
+        "packageVersions": {
+            "core": packages["ElsaVersion"],
+            "studio": packages["ElsaStudioVersion"],
+            "extensions": packages["ElsaExtensionsVersion"],
+        },
+        "images": selected_images,
+        "requiredFamilies": sorted(required_families),
+        "matrix": {"include": selected_images},
+    }
+
+
+def github_output(values: dict[str, Any], path: str | None) -> None:
+    lines = []
+    for key, value in values.items():
+        encoded = json.dumps(value, separators=(",", ":")) if isinstance(value, (dict, list)) else str(value).lower() if isinstance(value, bool) else str(value)
+        lines.append(f"{key}={encoded}")
+    content = "\n".join(lines) + "\n"
+    if path:
+        with Path(path).open("a", encoding="utf-8") as output:
+            output.write(content)
+    else:
+        print(content, end="")
+
+
+def labels_for(version: str, commit: str, source_ref: str, package_versions: dict[str, str]) -> dict[str, str]:
+    return {
+        "org.opencontainers.image.source": f"https://github.com/{APPS_REPOSITORY}",
+        "org.opencontainers.image.revision": commit,
+        "org.opencontainers.image.version": version,
+        "org.opencontainers.image.ref.name": source_ref,
+        "com.elsa.packages.core": package_versions["core"],
+        "com.elsa.packages.studio": package_versions["studio"],
+        "com.elsa.packages.extensions": package_versions["extensions"],
+    }
+
+
+def run_command(command: list[str], *, check: bool = True, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, text=True, capture_output=True, env=env)
+    if check and result.returncode:
+        output = (result.stderr or result.stdout).strip()
+        raise ReleaseError(f"Command failed ({result.returncode}): {' '.join(command)}\n{output}")
+    return result
+
+
+def package_family(package_id: str) -> str | None:
+    if package_id == "Elsa.Logging" or any(package_id.startswith(prefix) for prefix in EXTENSION_PACKAGES):
+        return "extensions"
+    if package_id == "Elsa.Studio" or package_id.startswith("Elsa.Studio."):
+        return "studio"
+    if package_id == "Elsa" or package_id.startswith("Elsa."):
+        return "core"
+    return None
+
+
+def validate_assets_json(assets: dict[str, Any], expected: dict[str, str], required_families: list[str]) -> dict[str, list[dict[str, str]]]:
+    resolved: dict[str, list[dict[str, str]]] = {family: [] for family in required_families}
+    for key, metadata in assets.get("libraries", {}).items():
+        if metadata.get("type") != "package" or "/" not in key:
+            continue
+        package_id, version = key.rsplit("/", 1)
+        family = package_family(package_id)
+        if family in resolved:
+            resolved[family].append({"id": package_id, "version": version})
+
+    for family in required_families:
+        packages = resolved[family]
+        if not packages:
+            raise ReleaseError(f"Embedded project.assets.json has no {family} Elsa packages")
+        wrong = [item for item in packages if item["version"] != expected[family]]
+        if wrong:
+            details = ", ".join(f"{item['id']}={item['version']}" for item in wrong)
+            raise ReleaseError(f"Embedded {family} package versions do not match {expected[family]}: {details}")
+        packages.sort(key=lambda item: item["id"].casefold())
+    return resolved
+
+
+def read_embedded_assets(reference: str, platform: str, path: str) -> dict[str, Any]:
+    output = run_command(
+        ["docker", "run", "--rm", "--platform", platform, "--entrypoint", "cat", reference, path]
+    ).stdout
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as error:
+        raise ReleaseError(f"Could not parse embedded package asset evidence from {reference}: {error}") from error
+
+
+def inspect_manifest(reference: str) -> dict[str, Any] | None:
+    result = run_command(["docker", "buildx", "imagetools", "inspect", reference], check=False)
+    if result.returncode:
+        output = f"{result.stdout}\n{result.stderr}"
+        if re.search(r"manifest unknown|not found|no such manifest|name unknown", output, re.I):
+            return None
+        raise ReleaseError(f"Could not inspect registry image {reference}: {output.strip()}")
+
+    root_match = re.search(r"^Digest:\s+(sha256:[0-9a-f]{64})\s*$", result.stdout, re.M)
+    if not root_match:
+        raise ReleaseError(f"Registry inspection did not return a root digest for {reference}")
+
+    platforms: dict[str, str] = {}
+    sections = re.split(r"(?m)^  Name:\s+", result.stdout)
+    for section in sections[1:]:
+        name = section.splitlines()[0].strip()
+        platform_match = re.search(r"(?m)^  Platform:\s+(linux/[^\s]+)\s*$", section)
+        if not platform_match:
+            continue
+        digest_match = re.search(r"@((?:sha256):[0-9a-f]{64})", name)
+        if digest_match:
+            platform = platform_match.group(1)
+            if platform == "linux/arm64/v8":
+                platform = "linux/arm64"
+            if platform in platforms:
+                raise ReleaseError(f"Registry inspection returned duplicate platform {platform} for {reference}")
+            platforms[platform] = digest_match.group(1)
+
+    return {"digest": root_match.group(1), "platforms": platforms}
+
+
+def image_reference(repository: str, tag: str) -> str:
+    return f"{repository}:{tag}"
+
+
+def verify_manifest(reference: str, *, expected_digest: str | None = None) -> dict[str, Any]:
+    manifest = inspect_manifest(reference)
+    if manifest is None:
+        raise ReleaseError(f"Registry image does not exist: {reference}")
+    missing = set(REQUIRED_PLATFORMS) - set(manifest["platforms"])
+    if missing:
+        raise ReleaseError(f"{reference} is missing required platforms: {sorted(missing)}")
+    extra = set(manifest["platforms"]) - set(REQUIRED_PLATFORMS)
+    if extra:
+        raise ReleaseError(f"{reference} contains unsupported platforms: {sorted(extra)}")
+    if expected_digest and manifest["digest"] != expected_digest:
+        raise ReleaseError(f"{reference} digest {manifest['digest']} does not match {expected_digest}")
+    manifest["platforms"] = {
+        platform: manifest["platforms"][platform] for platform in REQUIRED_PLATFORMS
+    }
+    return manifest
+
+
+def verify_labels(reference: str, expected: dict[str, str], platforms: Iterable[str]) -> None:
+    for platform in platforms:
+        run_command(["docker", "pull", "--platform", platform, reference])
+        result = run_command(
+            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", reference]
+        )
+        try:
+            actual = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ReleaseError(f"Could not read image labels from {reference}: {error}") from error
+        for key, value in expected.items():
+            if key == "org.opencontainers.image.ref.name":
+                allowed_refs = {"refs/heads/main", f"refs/tags/{expected['org.opencontainers.image.version']}"}
+                if actual.get(key) not in allowed_refs:
+                    raise ReleaseError(f"{reference} has an unapproved publication ref label: {actual.get(key)!r}")
+                continue
+            if actual.get(key) != value:
+                raise ReleaseError(
+                    f"{reference} label {key!r} is {actual.get(key)!r}; expected {value!r}"
+                )
+
+
+def get_image_plan_with_packages(
+    repository: str, version: str, commit: str, source_ref: str, package_versions: dict[str, str]
+) -> dict[str, Any]:
+    expected_labels = labels_for(version, commit, source_ref, package_versions)
+    release_reference = image_reference(repository, version)
+    release_manifest = inspect_manifest(release_reference)
+    if release_manifest:
+        verified = verify_manifest(release_reference)
+        verify_labels(release_reference, expected_labels, REQUIRED_PLATFORMS)
+        return {"source_ref": release_reference, "reuse": True, "manifest": verified}
+
+    candidate_reference = image_reference(repository, f"{version}-sha-{commit}")
+    candidate_manifest = inspect_manifest(candidate_reference)
+    if candidate_manifest:
+        verified = verify_manifest(candidate_reference)
+        verify_labels(candidate_reference, expected_labels, REQUIRED_PLATFORMS)
+        return {"source_ref": candidate_reference, "reuse": True, "manifest": verified}
+
+    return {"source_ref": candidate_reference, "reuse": False, "manifest": None}
+
+
+def wait_for_http(container_id: str, container_port: int, timeout_seconds: int = 120) -> tuple[str, int]:
+    port_output = run_command(["docker", "port", container_id, f"{container_port}/tcp"]).stdout.strip()
+    host_port = port_output.splitlines()[0].rsplit(":", 1)[-1]
+    url = f"http://127.0.0.1:{host_port}/"
+    expires = time.monotonic() + timeout_seconds
+    last_status = 0
+    while time.monotonic() < expires:
+        state = run_command(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container_id]
+        ).stdout.strip()
+        if state.lower() != "true":
+            logs = run_command(["docker", "logs", container_id], check=False)
+            raise ReleaseError(f"Container exited before HTTP smoke test:\n{logs.stdout}\n{logs.stderr}")
+        try:
+            with urllib.request.urlopen(url, timeout=3) as response:
+                last_status = response.status
+        except urllib.error.HTTPError as error:
+            last_status = error.code
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+            time.sleep(2)
+            continue
+        if last_status == 200:
+            return url, last_status
+        time.sleep(2)
+    raise ReleaseError(f"HTTP smoke test did not pass for {url}; last status was {last_status}")
+
+
+def login_and_probe_api(url: str, username: str, password: str) -> dict[str, Any]:
+    api_root = f"{url.rstrip('/')}/elsa/api"
+    credentials = json.dumps(
+        {"username": username, "password": password}
+    ).encode("utf-8")
+    login_request = urllib.request.Request(
+        f"{api_root}/identity/login",
+        data=credentials,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(login_request, timeout=15) as response:
+            login_status = response.status
+            login = json.loads(response.read())
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as error:
+        raise ReleaseError(f"Synthetic admin login failed: {error}") from error
+    access_token = login.get("accessToken") or login.get("AccessToken")
+    if login_status != 200 or not access_token:
+        raise ReleaseError("Synthetic admin login did not return an access token")
+
+    probe = urllib.request.Request(
+        f"{api_root}/identity/me/permissions",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    try:
+        with urllib.request.urlopen(probe, timeout=15) as response:
+            api_status = response.status
+            response.read()
+    except (urllib.error.URLError, urllib.error.HTTPError) as error:
+        raise ReleaseError(f"Bearer-authenticated identity API probe failed: {error}") from error
+    if api_status != 200:
+        raise ReleaseError(f"Bearer-authenticated identity API returned HTTP {api_status}")
+    return {
+        "identityLogin": {"status": login_status, "endpoint": "/elsa/api/identity/login"},
+        "bearerApi": {"status": api_status, "endpoint": "/elsa/api/identity/me/permissions"},
+    }
+
+
+def verify_smoke_assets(url: str, asset_paths: Iterable[str]) -> list[dict[str, Any]]:
+    verified = []
+    for path in asset_paths:
+        try:
+            with urllib.request.urlopen(f"{url.rstrip('/')}{path}", timeout=15) as response:
+                body = response.read()
+                status = response.status
+                content_type = response.headers.get("Content-Type", "").lower()
+        except (urllib.error.URLError, urllib.error.HTTPError) as error:
+            raise ReleaseError(f"Browser framework asset {path} is unavailable: {error}") from error
+        if status != 200 or len(body) < 100:
+            raise ReleaseError(f"Browser framework asset {path} returned HTTP {status} or an empty body")
+        if "javascript" not in content_type and "ecmascript" not in content_type:
+            raise ReleaseError(f"Browser framework asset {path} has unexpected content type {content_type!r}")
+        if body.lstrip().lower().startswith((b"<!doctype html", b"<html")):
+            raise ReleaseError(f"Browser framework asset {path} returned the HTML fallback page")
+        verified.append({"path": path, "status": status, "bytes": len(body), "contentType": content_type})
+    return verified
+
+
+def smoke_image(
+    reference: str,
+    platform: str,
+    port: int,
+    local: bool = False,
+    auth_enabled: bool = False,
+    smoke_assets: Iterable[str] = (),
+    image_digest: str | None = None,
+) -> dict[str, Any]:
+    platform_args = [] if local else ["--platform", platform]
+    username = "container-smoke"
+    password = secrets.token_urlsafe(32) if auth_enabled else ""
+    run_env = {
+        **os.environ,
+        "Identity__AdminUser__UserName": username,
+        "Identity__AdminUser__Password": password,
+    } if auth_enabled else None
+    auth_args = (
+        [
+            "--env",
+            "Identity__AdminUser__UserName",
+            "--env",
+            "Identity__AdminUser__Password",
+        ]
+        if auth_enabled
+        else []
+    )
+    run = run_command(
+        [
+            "docker",
+            "run",
+            "--detach",
+            *platform_args,
+            "--publish",
+            f"127.0.0.1::{port}",
+            "--env",
+            "ASPNETCORE_ENVIRONMENT=Production",
+            *auth_args,
+            reference,
+        ],
+        env=run_env,
+    )
+    container_id = run.stdout.strip()
+    try:
+        url, status = wait_for_http(container_id, port)
+        image_digest = image_digest or (reference.rsplit("@", 1)[-1] if "@" in reference else reference)
+        result = {
+            "platform": platform,
+            "imageDigest": image_digest,
+            "status": "success",
+            "endpoint": url,
+            "httpStatus": status,
+        }
+        result["browserAssets"] = verify_smoke_assets(url, smoke_assets)
+        if auth_enabled:
+            result.update(login_and_probe_api(url, username, password))
+        return result
+    finally:
+        run_command(["docker", "rm", "--force", container_id], check=False)
+
+
+def verify_registry_image(
+    repository: str,
+    reference: str,
+    version: str,
+    commit: str,
+    source_ref: str,
+    package_versions: dict[str, str],
+    port: int,
+    image: dict[str, Any],
+) -> dict[str, Any]:
+    manifest = verify_manifest(reference)
+    verify_labels(reference, labels_for(version, commit, source_ref, package_versions), REQUIRED_PLATFORMS)
+    smoke = []
+    package_evidence: dict[str, list[dict[str, str]]] | None = None
+    for platform in REQUIRED_PLATFORMS:
+        platform_reference = f"{repository}@{manifest['platforms'][platform]}"
+        assets = read_embedded_assets(platform_reference, platform, image["assetsPath"])
+        evidence = validate_assets_json(assets, package_versions, image["packages"])
+        if package_evidence is not None and evidence != package_evidence:
+            raise ReleaseError(f"Resolved Elsa package evidence differs between platforms for {repository}")
+        package_evidence = evidence
+        smoke.append(
+            smoke_image(
+                platform_reference,
+                platform,
+                port,
+                auth_enabled=image.get("smokeAuth", False),
+                smoke_assets=image.get("smokeAssets", []),
+            )
+        )
+    return {
+        "digest": manifest["digest"],
+        "registryVerified": True,
+        "platforms": [
+            {"platform": platform, "digest": manifest["platforms"][platform]}
+            for platform in REQUIRED_PLATFORMS
+        ],
+        "smoke": {"success": True, "imageDigest": manifest["digest"], "platforms": smoke},
+        "resolvedPackages": package_evidence,
+    }
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def select_latest_image_artifacts(
+    paths: Iterable[Path],
+    selected_images: list[dict[str, Any]],
+    run_id: str,
+    current_attempt: int,
+) -> list[dict[str, Any]]:
+    expected = {image["id"] for image in selected_images}
+    all_ids = {image["id"] for image in IMAGES}
+    artifacts: dict[tuple[str, int], list[Path]] = {}
+    artifact_names: dict[tuple[str, int], str] = {}
+    pattern = re.compile(r"^container-image-([a-z0-9-]+)-([0-9]+)-([0-9]+)$")
+
+    for path in paths:
+        artifact_name = path.parent.name
+        match = pattern.fullmatch(artifact_name)
+        if not match:
+            raise ReleaseError(f"Malformed image evidence artifact name: {artifact_name!r}")
+        image_id, artifact_run_id, attempt_text = match.groups()
+        if image_id not in all_ids:
+            raise ReleaseError(f"Image evidence artifact contains an unknown profile: {image_id!r}")
+        if image_id not in expected:
+            raise ReleaseError(f"Unexpected image evidence artifact for unselected profile {image_id!r}")
+        if path.name != f"{image_id}.json":
+            raise ReleaseError(f"Image evidence artifact {artifact_name} has unexpected file {path.name!r}")
+        if artifact_run_id != str(run_id):
+            raise ReleaseError(f"Image evidence artifact belongs to run {artifact_run_id}, expected {run_id}")
+        attempt = int(attempt_text)
+        if attempt < 1 or attempt > current_attempt:
+            raise ReleaseError(f"Image evidence artifact has invalid/future attempt {attempt}")
+        key = (image_id, attempt)
+        artifacts.setdefault(key, []).append(path)
+        artifact_names[key] = artifact_name
+
+    selected: list[dict[str, Any]] = []
+    for image in selected_images:
+        image_id = image["id"]
+        attempts = [attempt for candidate_id, attempt in artifacts if candidate_id == image_id]
+        if not attempts:
+            raise ReleaseError(f"Missing image evidence artifact for selected profile {image_id!r}")
+        attempt = max(attempts)
+        key = (image_id, attempt)
+        candidates = artifacts[key]
+        if len(candidates) != 1:
+            raise ReleaseError(f"Duplicate image evidence artifacts for {image_id!r} attempt {attempt}")
+        selected.append(
+            {
+                "id": image_id,
+                "path": candidates[0],
+                "artifactName": artifact_names[key],
+                "runId": str(run_id),
+                "runAttempt": attempt,
+            }
+        )
+    return selected
+
+
+def read_fragments(
+    selected_artifacts: list[dict[str, Any]], selected_images: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    expected_ids = [image["id"] for image in selected_images]
+    artifact_ids = [item["id"] for item in selected_artifacts]
+    if artifact_ids != expected_ids:
+        raise ReleaseError(f"Expected selected artifacts in profile order; found {artifact_ids}")
+    fragments = []
+    for artifact in selected_artifacts:
+        fragment = json.loads(Path(artifact["path"]).read_text(encoding="utf-8"))
+        if fragment.get("id") != artifact["id"]:
+            raise ReleaseError(
+                f"Image evidence artifact {artifact['artifactName']} contains profile {fragment.get('id')!r}"
+            )
+        fragment["evidenceRun"] = {
+            "artifactName": artifact["artifactName"],
+            "runId": artifact["runId"],
+            "runAttempt": artifact["runAttempt"],
+        }
+        fragments.append(fragment)
+    return fragments
+
+
+def validate_fragment_evidence(
+    fragments: list[dict[str, Any]],
+    selected_images: list[dict[str, Any]],
+    version: str,
+    commit: str,
+    package_versions: dict[str, str],
+    publication: str,
+) -> None:
+    by_id = {fragment["id"]: fragment for fragment in fragments}
+    expected_platforms = REQUIRED_PLATFORMS if publication == "published" else ("linux/amd64",)
+    for image in selected_images:
+        fragment = by_id[image["id"]]
+        if fragment.get("name") != image["name"] or fragment.get("repository") != image["repository"]:
+            raise ReleaseError(f"Image evidence identity does not match profile {image['name']}")
+        digest = fragment.get("digest", "")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise ReleaseError(f"Image evidence for {image['name']} has an invalid root digest")
+        source_ref = fragment.get("sourceRef", "")
+        allowed_source_refs = {
+            image_reference(image["repository"], version),
+            image_reference(image["repository"], f"{version}-sha-{commit}"),
+        }
+        if publication != "published":
+            allowed_source_refs.add(f"elsa-local-{image['id']}:{version}-{commit}")
+        if source_ref not in allowed_source_refs:
+            raise ReleaseError(f"Image evidence source reference is not bound to {image['name']} release inputs")
+
+        platform_rows = fragment.get("platforms", [])
+        platform_map = {row.get("platform"): row.get("digest") for row in platform_rows}
+        if len(platform_rows) != len(platform_map) or set(platform_map) != set(expected_platforms):
+            raise ReleaseError(f"Image evidence for {image['name']} has incomplete or unexpected platform manifests")
+        if any(not re.fullmatch(r"sha256:[0-9a-f]{64}", value or "") for value in platform_map.values()):
+            raise ReleaseError(f"Image evidence for {image['name']} has an invalid platform digest")
+
+        smoke = fragment.get("smoke", {})
+        smoke_rows = smoke.get("platforms", [])
+        smoke_map = {row.get("platform"): row for row in smoke_rows}
+        if (
+            smoke.get("success") is not True
+            or smoke.get("imageDigest") != digest
+            or set(smoke_map) != set(expected_platforms)
+            or len(smoke_rows) != len(smoke_map)
+        ):
+            raise ReleaseError(f"Image evidence for {image['name']} is not bound to successful platform smoke results")
+        for platform in expected_platforms:
+            row = smoke_map[platform]
+            if (
+                row.get("status") != "success"
+                or row.get("httpStatus") != 200
+                or row.get("imageDigest") != platform_map[platform]
+            ):
+                raise ReleaseError(f"Image evidence for {image['name']} failed HTTP smoke on {platform}")
+            browser_assets = row.get("browserAssets", [])
+            if [asset.get("path") for asset in browser_assets] != image.get("smokeAssets", []):
+                raise ReleaseError(f"Image evidence for {image['name']} is missing browser framework assets on {platform}")
+            if any(
+                asset.get("status") != 200
+                or asset.get("bytes", 0) < 100
+                or ("javascript" not in asset.get("contentType", "") and "ecmascript" not in asset.get("contentType", ""))
+                for asset in browser_assets
+            ):
+                raise ReleaseError(f"Image evidence for {image['name']} contains a failed browser asset on {platform}")
+            if image.get("smokeAuth"):
+                if (
+                    row.get("identityLogin", {}).get("status") != 200
+                    or row.get("bearerApi", {}).get("status") != 200
+                    or row.get("identityLogin", {}).get("endpoint") != "/elsa/api/identity/login"
+                    or row.get("bearerApi", {}).get("endpoint") != "/elsa/api/identity/me/permissions"
+                ):
+                    raise ReleaseError(f"Image evidence for {image['name']} lacks successful authenticated API smoke")
+
+        packages = fragment.get("resolvedPackages", {})
+        if set(packages) != set(image["packages"]):
+            raise ReleaseError(f"Image evidence for {image['name']} has the wrong resolved package families")
+        for family in image["packages"]:
+            rows = packages[family]
+            if not rows or any(row.get("version") != package_versions[family] for row in rows):
+                raise ReleaseError(f"Image evidence for {image['name']} has incomplete {family} package provenance")
+            if any(package_family(row.get("id", "")) != family for row in rows):
+                raise ReleaseError(f"Image evidence for {image['name']} has misclassified {family} package provenance")
+
+
+def same_platforms(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_platforms = {item["platform"]: item["digest"] for item in left["platforms"]}
+    right_platforms = {item["platform"]: item["digest"] for item in right["platforms"]}
+    return left_platforms == right_platforms
+
+
+def run_docker_promotion(
+    fragments: list[dict[str, Any]],
+    selected_images: list[dict[str, Any]],
+    version: str,
+    commit: str,
+    source_ref: str,
+    package_versions: dict[str, str],
+) -> list[dict[str, Any]]:
+    by_id = {fragment["id"]: fragment for fragment in fragments}
+    planned: list[tuple[str, str, str, dict[str, Any]]] = []
+
+    # Check every destination before creating any version tags.
+    for image in selected_images:
+        source = by_id[image["id"]]
+        version_ref = image_reference(image["repository"], version)
+        immutable_source_ref = f"{image['repository']}@{source['digest']}"
+        source_manifest = verify_manifest(immutable_source_ref, expected_digest=source["digest"])
+        fragment_platforms = {item["platform"]: item["digest"] for item in source["platforms"]}
+        if source_manifest["platforms"] != fragment_platforms:
+            raise ReleaseError(f"Source manifest platforms do not match verified smoke evidence for {image['name']}")
+        existing = inspect_manifest(version_ref)
+        if existing is not None:
+            existing_manifest = verify_manifest(version_ref)
+            verify_labels(
+                version_ref,
+                labels_for(version, commit, source_ref, package_versions),
+                REQUIRED_PLATFORMS,
+            )
+            if existing_manifest["digest"] != source_manifest["digest"]:
+                raise ReleaseError(f"Refusing to overwrite conflicting version tag {version_ref}")
+            if existing_manifest["platforms"] != source_manifest["platforms"]:
+                raise ReleaseError(f"Refusing to reuse version tag with conflicting platforms {version_ref}")
+        planned.append((version_ref, immutable_source_ref, image["id"], source_manifest))
+
+    for image in selected_images:
+        source = by_id[image["id"]]
+        source_platforms = {item["platform"]: item["digest"] for item in source["platforms"]}
+        for alias in image.get("aliases", []):
+            alias_ref = image_reference(alias["repository"], version)
+            existing = inspect_manifest(alias_ref)
+            if existing is None:
+                continue
+            existing_manifest = verify_manifest(alias_ref)
+            verify_labels(
+                alias_ref,
+                labels_for(version, commit, source_ref, package_versions),
+                REQUIRED_PLATFORMS,
+            )
+            if existing_manifest["digest"] != source["digest"] or existing_manifest["platforms"] != source_platforms:
+                raise ReleaseError(f"Refusing to overwrite conflicting alias tag {alias_ref}")
+
+    for version_ref, source_ref_for_image, image_id, source_manifest in planned:
+        if inspect_manifest(version_ref) is None:
+            run_command(["docker", "buildx", "imagetools", "create", "--tag", version_ref, source_ref_for_image])
+        promoted = verify_manifest(version_ref, expected_digest=source_manifest["digest"])
+        if promoted["platforms"] != source_manifest["platforms"]:
+            raise ReleaseError(f"Platform manifests changed while promoting {version_ref}")
+        verify_labels(
+            version_ref,
+            labels_for(version, commit, source_ref, package_versions),
+            REQUIRED_PLATFORMS,
+        )
+        by_id[image_id]["promoted"] = {"reference": version_ref, **promoted}
+
+    output: list[dict[str, Any]] = []
+    for image in selected_images:
+        source = by_id[image["id"]]
+        promoted = source["promoted"]
+        if promoted["platforms"] != {
+            item["platform"]: item["digest"] for item in source["platforms"]
+        }:
+            raise ReleaseError(f"Promoted image platforms do not match smoke evidence for {promoted['reference']}")
+        verify_labels(
+            promoted["reference"],
+            labels_for(version, commit, source_ref, package_versions),
+            REQUIRED_PLATFORMS,
+        )
+        entry = {
+            "name": image["name"],
+            "repository": image["repository"],
+            "tag": version,
+            "sourceRef": source["sourceRef"],
+            "digest": promoted["digest"],
+            "platforms": source["platforms"],
+            "registryVerified": True,
+            "smoke": source["smoke"],
+            "packages": image["packages"],
+            "packageVersions": {family: package_versions[family] for family in image["packages"]},
+            "resolvedPackages": source["resolvedPackages"],
+        }
+        output.append(entry)
+
+    canonical_by_id = {item["id"]: next(row for row in output if row["name"] == item["name"]) for item in selected_images}
+    for image in selected_images:
+        canonical = canonical_by_id[image["id"]]
+        for alias in image.get("aliases", []):
+            alias_ref = image_reference(alias["repository"], version)
+            existing = inspect_manifest(alias_ref)
+            if existing is None:
+                run_command(
+                    [
+                        "docker",
+                        "buildx",
+                        "imagetools",
+                        "create",
+                        "--tag",
+                        alias_ref,
+                        f"{canonical['repository']}@{canonical['digest']}",
+                    ]
+                )
+            alias_manifest = verify_manifest(alias_ref, expected_digest=canonical["digest"])
+            if alias_manifest["platforms"] != {
+                item["platform"]: item["digest"] for item in canonical["platforms"]
+            }:
+                raise ReleaseError(f"Alias platform manifests do not match {canonical['repository']}")
+            verify_labels(
+                alias_ref,
+                labels_for(version, commit, source_ref, package_versions),
+                REQUIRED_PLATFORMS,
+            )
+            output.append(
+                {
+                    **canonical,
+                    "name": alias["name"],
+                    "repository": alias["repository"],
+                    "alias_of": image["name"],
+                }
+            )
+
+    return output
+
+
+def receipt_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    run_url = f"https://github.com/{args.repository}/actions/runs/{args.run_id}"
+    return {
+        "schemaVersion": 1,
+        "releaseVersion": args.version,
+        "appsRepository": args.repository,
+        "appsSource": {"ref": args.source_ref, "commit": args.commit},
+        "appsSourceCommit": args.commit,
+        "workflowRun": {
+            "repository": args.repository,
+            "id": args.run_id,
+            "url": run_url,
+            "workflow": args.workflow,
+            "runAttempt": args.run_attempt,
+            "event": args.event,
+            "ref": args.source_ref,
+            "headSha": args.commit,
+            "conclusion": "success",
+        },
+        "packageVersions": {
+            "core": args.core_version,
+            "studio": args.studio_version,
+            "extensions": args.extensions_version,
+        },
+        "workflowInputs": {
+            "version": getattr(args, "input_version", ""),
+            "publish": normalize_bool(getattr(args, "input_publish", "false")),
+            "images": getattr(args, "input_images", ""),
+            "core_version": getattr(args, "input_core_version", ""),
+            "studio_version": getattr(args, "input_studio_version", ""),
+            "extensions_version": getattr(args, "input_extensions_version", ""),
+            "expected_commit": (
+                getattr(args, "expected_commit", "") or args.commit
+                if args.event == "release"
+                else getattr(args, "expected_commit", "")
+            ),
+        },
+        "publication": "published" if args.publication == "published" else "build-only",
+    }
+
+
+def build_only_images(
+    fragments: list[dict[str, Any]], selected_images: list[dict[str, Any]], version: str,
+    package_versions: dict[str, str],
+) -> list[dict[str, Any]]:
+    by_id = {fragment["id"]: fragment for fragment in fragments}
+    images = []
+    for image in selected_images:
+        fragment = by_id[image["id"]]
+        entry = {
+            "name": image["name"],
+            "repository": image["repository"],
+            "tag": version,
+            "sourceRef": fragment["sourceRef"],
+            "digest": fragment["digest"],
+            "platforms": fragment["platforms"],
+            "registryVerified": False,
+            "smoke": fragment["smoke"],
+            "packages": image["packages"],
+            "packageVersions": {family: package_versions[family] for family in image["packages"]},
+            "resolvedPackages": fragment["resolvedPackages"],
+        }
+        images.append(entry)
+        for alias in image.get("aliases", []):
+            images.append({**entry, "name": alias["name"], "repository": alias["repository"], "alias_of": image["name"]})
+    return images
+
+
+def aggregate_resolved_packages(images: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
+    merged: dict[str, dict[tuple[str, str], dict[str, str]]] = {}
+    for image in images:
+        for family, packages in image.get("resolvedPackages", {}).items():
+            family_rows = merged.setdefault(family, {})
+            for package in packages:
+                family_rows[(package["id"], package["version"])] = package
+    return {
+        family: [rows[key] for key in sorted(rows, key=lambda value: (value[0].casefold(), value[1]))]
+        for family, rows in sorted(merged.items())
+    }
+
+
+def create_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    validate = subparsers.add_parser("validate-run")
+    validate.add_argument("--event", required=True)
+    validate.add_argument("--version", default="")
+    validate.add_argument("--publish", default="false")
+    validate.add_argument("--images", default="all")
+    validate.add_argument("--core-version", default="")
+    validate.add_argument("--studio-version", default="")
+    validate.add_argument("--extensions-version", default="")
+    validate.add_argument("--expected-commit", default="")
+    validate.add_argument("--ref", required=True)
+    validate.add_argument("--commit", required=True)
+    validate.add_argument("--release-tag", default="")
+    validate.add_argument("--packages", default="Directory.Packages.props")
+    validate.add_argument("--output", default=os.environ.get("GITHUB_OUTPUT"))
+
+    matrix = subparsers.add_parser("matrix")
+    matrix.add_argument("--output", default="")
+
+    plan = subparsers.add_parser("plan-image")
+    plan.add_argument("--repository", required=True)
+    plan.add_argument("--version", required=True)
+    plan.add_argument("--commit", required=True)
+    plan.add_argument("--source-ref", required=True)
+    plan.add_argument("--core-version", required=True)
+    plan.add_argument("--studio-version", required=True)
+    plan.add_argument("--extensions-version", required=True)
+    plan.add_argument("--output", default=os.environ.get("GITHUB_OUTPUT"))
+
+    verify = subparsers.add_parser("verify-image")
+    verify.add_argument("--id", required=True)
+    verify.add_argument("--repository", required=True)
+    verify.add_argument("--reference", required=True)
+    verify.add_argument("--version", required=True)
+    verify.add_argument("--commit", required=True)
+    verify.add_argument("--source-ref", required=True)
+    verify.add_argument("--core-version", required=True)
+    verify.add_argument("--studio-version", required=True)
+    verify.add_argument("--extensions-version", required=True)
+    verify.add_argument("--port", required=True, type=int)
+    verify.add_argument("--output-file", required=True)
+
+    local = subparsers.add_parser("verify-local")
+    local.add_argument("--id", required=True)
+    local.add_argument("--repository", required=True)
+    local.add_argument("--reference", required=True)
+    local.add_argument("--version", required=True)
+    local.add_argument("--commit", required=True)
+    local.add_argument("--source-ref", required=True)
+    local.add_argument("--core-version", required=True)
+    local.add_argument("--studio-version", required=True)
+    local.add_argument("--extensions-version", required=True)
+    local.add_argument("--port", required=True, type=int)
+    local.add_argument("--output-file", required=True)
+
+    finalize = subparsers.add_parser("finalize")
+    finalize.add_argument("--publication", choices=("published", "build-only"), required=True)
+    finalize.add_argument("--version", required=True)
+    finalize.add_argument("--commit", required=True)
+    finalize.add_argument("--source-ref", required=True)
+    finalize.add_argument("--images", default="all")
+    finalize.add_argument("--core-version", required=True)
+    finalize.add_argument("--studio-version", required=True)
+    finalize.add_argument("--extensions-version", required=True)
+    finalize.add_argument("--expected-commit", default="")
+    finalize.add_argument("--input-version", default="")
+    finalize.add_argument("--input-publish", default="false")
+    finalize.add_argument("--input-images", default="")
+    finalize.add_argument("--input-core-version", default="")
+    finalize.add_argument("--input-studio-version", default="")
+    finalize.add_argument("--input-extensions-version", default="")
+    finalize.add_argument("--event", required=True)
+    finalize.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", APPS_REPOSITORY))
+    finalize.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "local"))
+    finalize.add_argument("--run-attempt", type=int, default=os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
+    finalize.add_argument("--workflow", default=".github/workflows/container-images.yml")
+    finalize.add_argument("--artifact-dir", required=True)
+    finalize.add_argument("--output-file", default="artifacts/container-release-receipt.json")
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = create_parser().parse_args(argv)
+    try:
+        validate_inventory()
+        if args.command == "validate-run":
+            run = resolve_run(args)
+            github_output(
+                {
+                    "release_version": run["version"],
+                    "publish": run["publish"],
+                    "source_ref": run["sourceRef"],
+                    "source_commit": run["sourceCommit"],
+                    "core_version": run["packageVersions"]["core"],
+                    "studio_version": run["packageVersions"]["studio"],
+                    "extensions_version": run["packageVersions"]["extensions"],
+                    "images": ",".join(image["name"] for image in run["images"]),
+                    "matrix": run["matrix"],
+                },
+                args.output,
+            )
+        elif args.command == "matrix":
+            content = json.dumps({"include": list(IMAGES)}, separators=(",", ":")) + "\n"
+            if args.output:
+                Path(args.output).write_text(content, encoding="utf-8")
+            else:
+                print(content, end="")
+        elif args.command == "plan-image":
+            package_versions = {
+                "core": args.core_version,
+                "studio": args.studio_version,
+                "extensions": args.extensions_version,
+            }
+            plan = get_image_plan_with_packages(
+                args.repository, args.version, args.commit, args.source_ref, package_versions
+            )
+            github_output(
+                {
+                    "source_ref": plan["source_ref"],
+                    "reuse": plan["reuse"],
+                    "digest": (plan["manifest"] or {}).get("digest", ""),
+                },
+                args.output,
+            )
+        elif args.command == "verify-image":
+            image = next(item for item in IMAGES if item["id"] == args.id)
+            package_versions = {
+                "core": args.core_version,
+                "studio": args.studio_version,
+                "extensions": args.extensions_version,
+            }
+            evidence = verify_registry_image(
+                args.repository,
+                args.reference,
+                args.version,
+                args.commit,
+                args.source_ref,
+                package_versions,
+                args.port,
+                image,
+            )
+            write_json(
+                Path(args.output_file),
+                {
+                    "id": args.id,
+                    "name": image["name"],
+                    "repository": args.repository,
+                    "sourceRef": args.reference,
+                    **evidence,
+                },
+            )
+        elif args.command == "verify-local":
+            run_command(["docker", "image", "inspect", args.reference])
+            labels_result = run_command(
+                ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", args.reference]
+            )
+            labels = json.loads(labels_result.stdout)
+            package_versions = {
+                "core": args.core_version,
+                "studio": args.studio_version,
+                "extensions": args.extensions_version,
+            }
+            image = next(item for item in IMAGES if item["id"] == args.id)
+            for key, value in labels_for(args.version, args.commit, args.source_ref, package_versions).items():
+                if labels.get(key) != value:
+                    raise ReleaseError(f"Local image label {key!r} does not match expected provenance")
+            image_id = run_command(["docker", "image", "inspect", "--format", "{{.Id}}", args.reference]).stdout.strip()
+            assets = json.loads(
+                run_command(["docker", "run", "--rm", "--entrypoint", "cat", args.reference, image["assetsPath"]]).stdout
+            )
+            resolved_packages = validate_assets_json(assets, package_versions, image["packages"])
+            smoke = [
+                smoke_image(
+                    args.reference,
+                    "linux/amd64",
+                    args.port,
+                    local=True,
+                    auth_enabled=image.get("smokeAuth", False),
+                    smoke_assets=image.get("smokeAssets", []),
+                    image_digest=image_id,
+                )
+            ]
+            write_json(
+                Path(args.output_file),
+                {
+                    "id": args.id,
+                    "name": image["name"],
+                    "repository": args.repository,
+                    "sourceRef": args.reference,
+                    "digest": image_id,
+                    "platforms": [{"platform": "linux/amd64", "digest": image_id}],
+                    "smoke": {"success": True, "imageDigest": image_id, "platforms": smoke},
+                    "resolvedPackages": resolved_packages,
+                },
+            )
+        elif args.command == "finalize":
+            selected_images = parse_image_selection(args.images)
+            artifact_root = Path(args.artifact_dir)
+            if not artifact_root.is_dir():
+                raise ReleaseError(f"Image evidence artifact directory does not exist: {artifact_root}")
+            selected_artifacts = select_latest_image_artifacts(
+                artifact_root.rglob("*.json"), selected_images, args.run_id, args.run_attempt
+            )
+            fragments = read_fragments(selected_artifacts, selected_images)
+            package_versions = {
+                "core": args.core_version,
+                "studio": args.studio_version,
+                "extensions": args.extensions_version,
+            }
+            validate_fragment_evidence(
+                fragments,
+                selected_images,
+                args.version,
+                args.commit,
+                package_versions,
+                args.publication,
+            )
+            if args.publication == "published":
+                images = run_docker_promotion(
+                    fragments,
+                    selected_images,
+                    args.version,
+                    args.commit,
+                    args.source_ref,
+                    package_versions,
+                )
+                registry_verified_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+            else:
+                images = build_only_images(fragments, selected_images, args.version, package_versions)
+                registry_verified_at = None
+            receipt = receipt_metadata(args)
+            receipt["images"] = images
+            receipt["resolvedPackages"] = aggregate_resolved_packages(images)
+            receipt["imageEvidence"] = [
+                {
+                    "profile": fragment["name"],
+                    **fragment["evidenceRun"],
+                }
+                for fragment in fragments
+            ]
+            receipt["registryVerifiedAt"] = registry_verified_at
+            receipt["smoke"] = {
+                "success": all(image.get("smoke", {}).get("success") for image in images),
+                "results": [
+                    {
+                        "repository": image["repository"],
+                        "tag": image["tag"],
+                        "imageDigest": image["digest"],
+                        **image["smoke"],
+                    }
+                    for image in images
+                ],
+            }
+            write_json(Path(args.output_file), receipt)
+            print(f"Wrote {args.output_file}")
+        return 0
+    except (ReleaseError, StopIteration, ET.ParseError, OSError, json.JSONDecodeError) as error:
+        print(f"container release error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
