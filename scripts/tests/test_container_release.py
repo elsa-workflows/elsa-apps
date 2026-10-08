@@ -486,6 +486,7 @@ class SmokeCredentialTests(unittest.TestCase):
 
     def test_smoke_errors_include_image_and_platform_without_credentials(self):
         with (
+            patch.object(release.secrets, "token_urlsafe", return_value="known-smoke-password"),
             patch.object(release, "run_command", return_value=Mock(stdout="test-container")),
             patch.object(release, "wait_for_http", return_value=("http://127.0.0.1:1234/", 200)),
             patch.object(release, "login_and_probe_api", side_effect=release.ReleaseError("API request timed out")),
@@ -500,7 +501,8 @@ class SmokeCredentialTests(unittest.TestCase):
                     8080,
                     auth_enabled=True,
                 )
-        self.assertNotIn("secret", str(error.exception))
+        self.assertNotIn("known-smoke-password", str(error.exception))
+        self.assertNotIn("container-smoke", str(error.exception))
 
 
 if __name__ == "__main__":
