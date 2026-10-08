@@ -423,6 +423,19 @@ def image_reference(repository: str, tag: str) -> str:
     return f"{repository}:{tag}"
 
 
+def repository_from_reference(reference: str) -> str:
+    if not isinstance(reference, str) or not reference:
+        raise ReleaseError("Image reference must be a non-empty string")
+    name = reference.split("@", 1)[0]
+    last_slash = name.rfind("/")
+    last_colon = name.rfind(":")
+    if last_colon > last_slash:
+        name = name[:last_colon]
+    if not name or name.endswith("/"):
+        raise ReleaseError(f"Could not resolve repository from image reference {reference!r}")
+    return name
+
+
 def verify_manifest(reference: str, *, expected_digest: str | None = None) -> dict[str, Any]:
     manifest = inspect_manifest(reference)
     if manifest is None:
@@ -442,24 +455,35 @@ def verify_manifest(reference: str, *, expected_digest: str | None = None) -> di
 
 
 def verify_labels(reference: str, expected: dict[str, str], platforms: Iterable[str]) -> None:
-    for platform in platforms:
-        run_command(["docker", "pull", "--platform", platform, reference])
+    requested_platforms = tuple(platforms)
+    if len(requested_platforms) != len(REQUIRED_PLATFORMS) or set(requested_platforms) != set(REQUIRED_PLATFORMS):
+        raise ReleaseError(f"Label verification requires exactly these platforms: {list(REQUIRED_PLATFORMS)}")
+
+    manifest = verify_manifest(reference)
+    repository = repository_from_reference(reference)
+    for platform in REQUIRED_PLATFORMS:
+        platform_reference = f"{repository}@{manifest['platforms'][platform]}"
+        run_command(["docker", "pull", "--platform", platform, platform_reference])
         result = run_command(
-            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", reference]
+            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", platform_reference]
         )
         try:
             actual = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise ReleaseError(f"Could not read image labels from {reference}: {error}") from error
+            raise ReleaseError(f"Could not read image labels from {platform_reference}: {error}") from error
+        if not isinstance(actual, dict):
+            raise ReleaseError(f"Could not read image labels from {platform_reference}: expected a JSON object")
         for key, value in expected.items():
             if key == "org.opencontainers.image.ref.name":
                 allowed_refs = {"refs/heads/main", f"refs/tags/{expected['org.opencontainers.image.version']}"}
                 if actual.get(key) not in allowed_refs:
-                    raise ReleaseError(f"{reference} has an unapproved publication ref label: {actual.get(key)!r}")
+                    raise ReleaseError(
+                        f"{platform_reference} has an unapproved publication ref label: {actual.get(key)!r}"
+                    )
                 continue
             if actual.get(key) != value:
                 raise ReleaseError(
-                    f"{reference} label {key!r} is {actual.get(key)!r}; expected {value!r}"
+                    f"{platform_reference} label {key!r} is {actual.get(key)!r}; expected {value!r}"
                 )
 
 
@@ -550,11 +574,7 @@ def login_and_probe_api(url: str, username: str, password: str) -> dict[str, Any
         )
 
     dashboard_api = probe_bearer_json_api(url, DASHBOARD_API_ENDPOINT, access_token)
-    dashboard = dashboard_api["body"]
-    if not isinstance(dashboard.get("runtime"), dict) or not isinstance(dashboard.get("workflowInstances"), dict):
-        raise ReleaseError(
-            f"Bearer-authenticated dashboard API request to {DASHBOARD_API_ENDPOINT} returned an unexpected JSON object"
-        )
+    dashboard_evidence = validate_dashboard_overview(dashboard_api["body"])
 
     return {
         "identityLogin": {"status": login_status, "endpoint": "/elsa/api/identity/login"},
@@ -567,7 +587,37 @@ def login_and_probe_api(url: str, username: str, password: str) -> dict[str, Any
             "status": dashboard_api["status"],
             "endpoint": DASHBOARD_API_ENDPOINT,
             "contentType": dashboard_api["contentType"],
+            **dashboard_evidence,
         },
+    }
+
+
+def validate_dashboard_overview(body: dict[str, Any]) -> dict[str, Any]:
+    runtime = body.get("runtime")
+    workflow_instances = body.get("workflowInstances")
+    if not isinstance(runtime, dict) or not isinstance(workflow_instances, dict):
+        raise ReleaseError(
+            f"Bearer-authenticated dashboard API request to {DASHBOARD_API_ENDPOINT} returned an unexpected JSON object"
+        )
+
+    runtime_status = runtime.get("status")
+    is_accepting_work = runtime.get("isAcceptingWork")
+    metric_names = ("running", "completed", "faulted", "suspended", "interrupted", "incidentBearing")
+    metrics = {name: workflow_instances.get(name) for name in metric_names}
+    if (
+        runtime_status != "AcceptingWork"
+        or is_accepting_work is not True
+        or any(type(value) is not int or value < 0 for value in metrics.values())
+    ):
+        raise ReleaseError(
+            f"Bearer-authenticated dashboard API request to {DASHBOARD_API_ENDPOINT} did not report an accepting workflow runtime and metrics"
+        )
+
+    return {
+        "runtimeStatus": runtime_status,
+        "isAcceptingWork": is_accepting_work,
+        "workflowMetricsValid": True,
+        "running": metrics["running"],
     }
 
 
@@ -889,6 +939,11 @@ def validate_fragment_evidence(
                     or row.get("dashboardApi", {}).get("status") != 200
                     or row.get("dashboardApi", {}).get("endpoint") != DASHBOARD_API_ENDPOINT
                     or row.get("dashboardApi", {}).get("contentType", "").split(";", 1)[0] != "application/json"
+                    or row.get("dashboardApi", {}).get("runtimeStatus") != "AcceptingWork"
+                    or row.get("dashboardApi", {}).get("isAcceptingWork") is not True
+                    or row.get("dashboardApi", {}).get("workflowMetricsValid") is not True
+                    or type(row.get("dashboardApi", {}).get("running")) is not int
+                    or row.get("dashboardApi", {}).get("running", -1) < 0
                 ):
                     raise ReleaseError(f"Image evidence for {image['name']} lacks successful authenticated API smoke")
 
@@ -1358,7 +1413,7 @@ def load_superseded_publication(
     run_repository = (run.get("repository") or {}).get("full_name")
     old_commit = str(run.get("head_sha", ""))
     attempt = run.get("run_attempt")
-    prior_source_ref = prior_publication_source_ref(run, version)
+    prior_publication_source_ref(run, version)
     if (
         str(run.get("id", "")) != run_id
         or run.get("status") != "completed"

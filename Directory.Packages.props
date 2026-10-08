@@ -27,6 +27,7 @@
         <PackageVersion Include="Elsa.Scheduling" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Workflows.Api" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Workflows.Runtime" Version="$(ElsaVersion)"/>
+        <PackageVersion Include="Elsa.Workflows.Runtime.Dashboard" Version="$(ElsaVersion)"/>
         <PackageVersion Include="Elsa.Workflows.Runtime.Distributed" Version="$(ElsaVersion)"/>
     </ItemGroup>
 
@@ -40,6 +41,7 @@
         <PackageVersion Include="Elsa.Studio.Localization.BlazorWasm" Version="$(ElsaStudioVersion)"/>
         <PackageVersion Include="Elsa.Studio.Login.BlazorServer" Version="$(ElsaStudioVersion)"/>
         <PackageVersion Include="Elsa.Studio.Login.BlazorWasm" Version="$(ElsaStudioVersion)"/>
+        <PackageVersion Include="Elsa.Studio.Workflows.Dashboard" Version="$(ElsaStudioVersion)"/>
     </ItemGroup>
 
     <ItemGroup>

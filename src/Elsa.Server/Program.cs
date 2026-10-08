@@ -35,6 +35,7 @@ services.AddElsa(elsa =>
             runtime.UseDistributedRuntime();
             runtime.WorkflowDispatcherOptions += options => configuration.Bind("Dispatcher", options);
         })
+        .UseWorkflowRuntimeDashboard()
         .UseIdentity(identity =>
         {
             identity.TokenOptions = options => configuration.Bind("Identity:Tokens", options);
