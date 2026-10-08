@@ -19,7 +19,7 @@ namespace Elsa.Studio.BlazorWasm.Client.Bootstrap
                 services.AddAgentsModule(backendApiConfig);
 
             if(modulesOptions.Features.Dashboard)
-                services.AddDashboardModule();
+                services.AddDashboardModule(backendApiConfig);
 
             if (modulesOptions.Features.Webhooks)
                 services.AddWebhooksModule();

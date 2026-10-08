@@ -1,7 +1,10 @@
 import argparse
+import hashlib
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -35,6 +38,198 @@ def args(**overrides):
     return argparse.Namespace(**values)
 
 
+def archive_receipt(receipt, artifact=None):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zipped:
+        zipped.writestr("container-release-receipt.json", json.dumps(receipt))
+    archive = buffer.getvalue()
+    if artifact is not None:
+        artifact["size_in_bytes"] = len(archive)
+        artifact["digest"] = "sha256:" + hashlib.sha256(archive).hexdigest()
+    return archive
+
+
+def correction_fixture():
+    version = "3.9.0"
+    prior_commit = "2" * 40
+    run_id = "424242"
+    attempt = 2
+    package_versions = {family: version for family in ("core", "studio", "extensions")}
+    platforms = {
+        "linux/amd64": "sha256:" + "a" * 64,
+        "linux/arm64": "sha256:" + "b" * 64,
+    }
+    receipt_images = []
+    for index, image in enumerate(release.IMAGES):
+        digest = "sha256:" + format(index + 4, "x") * 64
+        entry = {
+            "name": image["name"],
+            "repository": image["repository"],
+            "tag": version,
+            "sourceRef": f"{image['repository']}:{version}-sha-{prior_commit}",
+            "digest": digest,
+            "platforms": [
+                {"platform": platform, "digest": platform_digest}
+                for platform, platform_digest in platforms.items()
+            ],
+            "registryVerified": True,
+            "smoke": {"success": True},
+            "packages": image["packages"],
+            "packageVersions": {family: version for family in image["packages"]},
+            "resolvedPackages": {},
+        }
+        receipt_images.append(entry)
+    for image in release.IMAGES:
+        canonical = next(entry for entry in receipt_images if entry["name"] == image["name"])
+        for alias in image.get("aliases", []):
+            receipt_images.append({
+                **canonical,
+                "name": alias["name"],
+                "repository": alias["repository"],
+                "alias_of": image["name"],
+            })
+
+    receipt = {
+        "schemaVersion": 1,
+        "releaseVersion": version,
+        "appsRepository": release.APPS_REPOSITORY,
+        "appsSource": {"ref": "refs/heads/main", "commit": prior_commit},
+        "appsSourceCommit": prior_commit,
+        "workflowRun": {
+            "repository": release.APPS_REPOSITORY,
+            "id": run_id,
+            "runAttempt": attempt,
+            "workflow": ".github/workflows/container-images.yml",
+            "url": f"https://github.com/{release.APPS_REPOSITORY}/actions/runs/{run_id}",
+            "event": "workflow_dispatch",
+            "ref": "refs/heads/main",
+            "headSha": prior_commit,
+            "conclusion": "success",
+        },
+        "packageVersions": package_versions,
+        "workflowInputs": {
+            "version": version,
+            "publish": True,
+            "images": "all",
+            "core_version": version,
+            "studio_version": version,
+            "extensions_version": version,
+            "expected_commit": prior_commit,
+        },
+        "publication": "published",
+        "images": receipt_images,
+    }
+    archive = archive_receipt(receipt)
+    run = {
+        "id": int(run_id),
+        "status": "completed",
+        "conclusion": "success",
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/container-images.yml@refs/heads/main",
+        "html_url": f"https://github.com/{release.APPS_REPOSITORY}/actions/runs/{run_id}",
+        "head_branch": "main",
+        "head_repository": {"full_name": release.APPS_REPOSITORY},
+        "repository": {"full_name": release.APPS_REPOSITORY},
+        "head_sha": prior_commit,
+        "run_attempt": attempt,
+    }
+    artifact = {
+        "id": 812345,
+        "name": f"container-release-receipt-{version}-{run_id}-{attempt}",
+        "expired": False,
+        "size_in_bytes": len(archive),
+        "digest": "sha256:" + hashlib.sha256(archive).hexdigest(),
+        "workflow_run": {"id": int(run_id), "head_sha": prior_commit, "head_branch": "main"},
+    }
+    return receipt, run, artifact, archive, package_versions
+
+
+def set_prior_publication_provenance(receipt, run, artifact, *, event, source_ref, images="all"):
+    version = receipt["releaseVersion"]
+    old_commit = receipt["appsSourceCommit"]
+    head_branch = source_ref.removeprefix("refs/heads/").removeprefix("refs/tags/")
+    receipt["appsSource"]["ref"] = source_ref
+    prior_run = receipt["workflowRun"]
+    prior_run.update(event=event, ref=source_ref)
+    if event == "release":
+        receipt["workflowInputs"].update(
+            version="",
+            publish=False,
+            images="",
+            core_version="",
+            studio_version="",
+            extensions_version="",
+            expected_commit=old_commit,
+        )
+    else:
+        receipt["workflowInputs"].update(
+            version=version,
+            publish=True,
+            images=images,
+            core_version=version,
+            studio_version=version,
+            extensions_version=version,
+            expected_commit=old_commit,
+        )
+
+    run.update(
+        event=event,
+        head_branch=head_branch,
+        head_ref=source_ref,
+        path=f".github/workflows/container-images.yml@{source_ref}",
+    )
+    artifact["workflow_run"].update(
+        head_branch=head_branch,
+    )
+
+    return archive_receipt(receipt, artifact)
+
+
+def correction_fragments():
+    version = "3.9.0"
+    commit = "3" * 40
+    platforms = {
+        "linux/amd64": "sha256:" + "c" * 64,
+        "linux/arm64": "sha256:" + "d" * 64,
+    }
+    fragments = []
+    for index, image in enumerate(release.IMAGES):
+        fragments.append({
+            "id": image["id"],
+            "name": image["name"],
+            "repository": image["repository"],
+            "sourceRef": f"{image['repository']}:{version}-sha-{commit}",
+            "digest": "sha256:" + format(index + 10, "x") * 64,
+            "platforms": [
+                {"platform": platform, "digest": digest}
+                for platform, digest in platforms.items()
+            ],
+            "smoke": {"success": True},
+            "resolvedPackages": {},
+        })
+    return fragments
+
+
+def correction_registry(prior_by_reference, fragments, already_corrected=()):
+    version = "3.9.0"
+    registry = {}
+    new_refs = {}
+    for image, fragment in zip(release.IMAGES, fragments):
+        manifest = {
+            "digest": fragment["digest"],
+            "platforms": {item["platform"]: item["digest"] for item in fragment["platforms"]},
+        }
+        registry[f"{image['repository']}@{fragment['digest']}"] = manifest
+        new_refs[f"{image['repository']}:{version}"] = manifest
+        for alias in image.get("aliases", []):
+            new_refs[f"{alias['repository']}:{version}"] = manifest
+    for reference, prior in prior_by_reference.items():
+        registry[reference] = {"digest": prior["digest"], "platforms": prior["platforms"]}
+    for reference in already_corrected:
+        registry[reference] = new_refs[reference]
+    return registry
+
+
 class VersionAndSelectionTests(unittest.TestCase):
     def test_accepts_future_3x_semver_and_prereleases(self):
         for version in ("3.8.4", "3.9.0", "3.10.0", "3.9.1-rc.2", "3.10.0-preview.1"):
@@ -58,9 +253,12 @@ class VersionAndSelectionTests(unittest.TestCase):
         for profile in ("studio-wasm", "studio-wasm-standalone", "server-studio-wasm"):
             with self.subTest(profile=profile):
                 image = release.parse_image_selection(profile)[0]
+                expected = ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"]
+                if profile in ("studio-wasm", "studio-wasm-standalone"):
+                    expected.append("/Elsa.Studio.BlazorWasm.Client.styles.css")
                 self.assertEqual(
                     image["smokeAssets"],
-                    ["/_framework/dotnet.js", "/_framework/blazor.webassembly.js"],
+                    expected,
                 )
 
     def test_publication_source_and_expected_commit_are_pinned(self):
@@ -82,6 +280,25 @@ class VersionAndSelectionTests(unittest.TestCase):
     def test_dispatch_does_not_allow_pr_publication(self):
         with self.assertRaisesRegex(release.ReleaseError, "Pull requests cannot publish"):
             release.validate_publication("pull_request", "3.9.0", True, "refs/pull/42/merge")
+
+    def test_supersede_is_full_version_published_main_dispatch_only(self):
+        packages = {family: "3.9.0" for family in ("core", "studio", "extensions")}
+        release.validate_supersede_request(
+            "424242", "workflow_dispatch", "3.9.0", True, "refs/heads/main", list(release.IMAGES), packages
+        )
+        cases = (
+            ("pull_request", True, "refs/heads/main", list(release.IMAGES), packages),
+            ("workflow_dispatch", False, "refs/heads/main", list(release.IMAGES), packages),
+            ("workflow_dispatch", True, "refs/heads/release", list(release.IMAGES), packages),
+            ("workflow_dispatch", True, "refs/heads/main", list(release.IMAGES[:1]), packages),
+            ("workflow_dispatch", True, "refs/heads/main", list(release.IMAGES), {**packages, "studio": "3.8.4"}),
+        )
+        for event, publish, ref, images, package_versions in cases:
+            with self.subTest(event=event, publish=publish, ref=ref):
+                with self.assertRaises(release.ReleaseError):
+                    release.validate_supersede_request(
+                        "424242", event, "3.9.0", publish, ref, images, package_versions
+                    )
 
 
 class ManifestPromotionTests(unittest.TestCase):
@@ -209,6 +426,277 @@ class ManifestPromotionTests(unittest.TestCase):
                     any(command[:4] == ["docker", "buildx", "imagetools", "create"] for command in commands)
                 )
 
+    def test_correction_plan_ignores_the_existing_version_tag(self):
+        image = release.parse_image_selection("server")[0]
+        candidate_ref = f"{image['repository']}:3.9.0-sha-{COMMIT}"
+        manifest = {"digest": ROOT_DIGEST, "platforms": PLATFORMS}
+        with (
+            patch.object(release, "inspect_manifest", return_value=manifest) as inspect,
+            patch.object(release, "verify_labels"),
+        ):
+            plan = release.get_image_plan_with_packages(
+                image["repository"],
+                "3.9.0",
+                COMMIT,
+                "refs/heads/main",
+                {family: "3.9.0" for family in ("core", "studio", "extensions")},
+                skip_version_tag=True,
+            )
+        self.assertEqual(plan["source_ref"], candidate_ref)
+        self.assertTrue(plan["reuse"])
+        self.assertEqual([call.args[0] for call in inspect.call_args_list], [candidate_ref, candidate_ref])
+
+
+class SupersededPublicationTests(unittest.TestCase):
+    def assert_archive_rejected(self, run, artifact, archive, packages, message):
+        with self.assertRaisesRegex(release.ReleaseError, message):
+            release.validate_superseded_archive(
+                archive,
+                artifact,
+                expected_name=artifact["name"],
+                run=run,
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+            )
+
+    def promote(self, registry, prior, receipt, packages, fragments, run_command):
+        with (
+            patch.object(release, "inspect_manifest", side_effect=registry.get),
+            patch.object(release, "verify_labels"),
+            patch.object(release, "run_command", side_effect=run_command),
+        ):
+            return release.run_docker_promotion(
+                fragments,
+                list(release.IMAGES),
+                "3.9.0",
+                "3" * 40,
+                "refs/heads/main",
+                packages,
+                prior_by_reference=prior,
+                prior_commit=receipt["appsSourceCommit"],
+                prior_source_ref=receipt["appsSource"]["ref"],
+                prior_package_versions=receipt["packageVersions"],
+            )
+
+    def prior_publication(self):
+        receipt, run, artifact, archive, package_versions = correction_fixture()
+        _receipt, references, supersedes = release.validate_superseded_archive(
+            archive,
+            artifact,
+            expected_name=artifact["name"],
+            run=run,
+            version="3.9.0",
+            package_versions=package_versions,
+            repository=release.APPS_REPOSITORY,
+        )
+        return receipt, run, artifact, archive, package_versions, references, supersedes
+
+    def test_verified_artifact_has_exact_receipt_member_and_all_eight_refs(self):
+        _receipt, _run, artifact, _archive, _packages, references, supersedes = self.prior_publication()
+        self.assertEqual(len(references), 8)
+        self.assertEqual(len(supersedes["references"]), 8)
+        self.assertEqual(supersedes["receiptArtifact"]["id"], artifact["id"])
+        self.assertEqual(supersedes["receiptArtifact"]["archiveDigest"], artifact["digest"])
+
+    def test_loader_accepts_release_and_matching_tag_dispatch_prior_publications(self):
+        for event, source_ref in (
+            ("release", "refs/tags/3.9.0"),
+            ("workflow_dispatch", "refs/tags/3.9.0"),
+        ):
+            with self.subTest(event=event, source_ref=source_ref):
+                receipt, run, artifact, _archive, packages = correction_fixture()
+                archive = set_prior_publication_provenance(
+                    receipt,
+                    run,
+                    artifact,
+                    event=event,
+                    source_ref=source_ref,
+                    images=(
+                        "server,studio-server,studio-wasm,studio-wasm-standalone,server-studio-server,server-studio-wasm"
+                        if event == "workflow_dispatch"
+                        else "all"
+                    ),
+                )
+                with (
+                    patch.object(
+                        release,
+                        "github_api_json",
+                        side_effect=[run, {"total_count": 1, "artifacts": [artifact]}],
+                    ),
+                    patch.object(release, "github_api_artifact_zip", return_value=archive),
+                    patch.object(release.subprocess, "run", return_value=Mock(returncode=0)),
+                ):
+                    _loaded, references, supersedes = release.load_superseded_publication(
+                        "424242",
+                        version="3.9.0",
+                        package_versions=packages,
+                        repository=release.APPS_REPOSITORY,
+                        current_run_id="777777",
+                        current_commit="3" * 40,
+                    )
+                self.assertEqual(len(references), 8)
+                self.assertEqual(supersedes["workflowRun"]["event"], event)
+                self.assertEqual(supersedes["workflowRun"]["ref"], source_ref)
+
+    def test_rejects_prior_run_from_a_different_tag(self):
+        receipt, run, artifact, _archive, packages = correction_fixture()
+        archive = set_prior_publication_provenance(
+            receipt, run, artifact, event="workflow_dispatch", source_ref="refs/tags/3.9.0"
+        )
+        run["head_branch"] = "3.8.4"
+        artifact["workflow_run"]["head_branch"] = "3.8.4"
+        self.assert_archive_rejected(run, artifact, archive, packages, "matching version tag")
+
+    def test_rejects_receipt_event_or_ref_that_disagrees_with_prior_run(self):
+        receipt, run, artifact, _archive, packages = correction_fixture()
+        set_prior_publication_provenance(
+            receipt, run, artifact, event="release", source_ref="refs/tags/3.9.0"
+        )
+        receipt["workflowRun"]["event"] = "workflow_dispatch"
+        archive = archive_receipt(receipt, artifact)
+        self.assert_archive_rejected(run, artifact, archive, packages, "provenance")
+
+        receipt["workflowRun"]["event"] = "release"
+        receipt["appsSource"]["ref"] = "refs/heads/main"
+        archive = archive_receipt(receipt, artifact)
+        self.assert_archive_rejected(run, artifact, archive, packages, "provenance")
+
+    def test_rejects_archive_run_metadata_that_disagrees_with_github_run(self):
+        _receipt, run, artifact, archive, packages = correction_fixture()
+        artifact["workflow_run"]["event"] = "release"
+        self.assert_archive_rejected(run, artifact, archive, packages, "artifact metadata")
+
+    def test_rejects_tampered_digest_and_extra_archive_members(self):
+        _receipt, run, artifact, archive, packages = correction_fixture()
+        with self.assertRaisesRegex(release.ReleaseError, "does not match GitHub artifact metadata"):
+            release.validate_superseded_archive(
+                archive + b"tampered",
+                artifact,
+                expected_name=artifact["name"],
+                run=run,
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+            )
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zipped:
+            zipped.writestr("container-release-receipt.json", json.dumps(_receipt))
+            zipped.writestr("unexpected.json", "{}")
+        extra_archive = buffer.getvalue()
+        artifact["digest"] = "sha256:" + hashlib.sha256(extra_archive).hexdigest()
+        with self.assertRaisesRegex(release.ReleaseError, "only container-release-receipt.json"):
+            release.validate_superseded_archive(
+                extra_archive,
+                artifact,
+                expected_name=artifact["name"],
+                run=run,
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+            )
+
+    def test_loader_checks_canonical_successful_run_and_downloads_exact_artifact(self):
+        _receipt, run, artifact, archive, packages = correction_fixture()
+        current_commit = "3" * 40
+        with (
+            patch.object(release, "github_api_json", side_effect=[run, {"total_count": 1, "artifacts": [artifact]}]) as api,
+            patch.object(release, "github_api_artifact_zip", return_value=archive) as download,
+            patch.object(release.subprocess, "run", return_value=Mock(returncode=0)),
+        ):
+            _loaded, references, supersedes = release.load_superseded_publication(
+                "424242",
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+                current_run_id="777777",
+                current_commit=current_commit,
+            )
+        self.assertEqual(len(references), 8)
+        self.assertEqual(supersedes["appsSourceCommit"], run["head_sha"])
+        self.assertEqual(api.call_args_list[0].args[0], "repos/elsa-workflows/elsa-apps/actions/runs/424242")
+        self.assertEqual(
+            api.call_args_list[1].args[0],
+            "repos/elsa-workflows/elsa-apps/actions/runs/424242/artifacts?per_page=100",
+        )
+        download.assert_called_once_with("repos/elsa-workflows/elsa-apps/actions/artifacts/812345/zip")
+
+    def test_loader_rejects_same_source_before_downloading_or_promoting(self):
+        _receipt, run, _artifact, _archive, packages = correction_fixture()
+        with (
+            patch.object(release, "github_api_json", return_value=run) as api,
+            patch.object(release, "github_api_artifact_zip") as download,
+            patch.object(release.subprocess, "run") as command,
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "requires a new source commit"):
+                release.load_superseded_publication(
+                    "424242", version="3.9.0", package_versions=packages,
+                    repository=release.APPS_REPOSITORY, current_run_id="777777",
+                    current_commit=run["head_sha"],
+                )
+        api.assert_called_once()
+        download.assert_not_called()
+        command.assert_not_called()
+
+    def test_correction_retry_promotes_prior_refs_and_leaves_latest_tags_out(self):
+        receipt, _run, _artifact, _archive, packages, prior, _supersedes = self.prior_publication()
+        fragments = correction_fragments()
+        corrected_ref = "elsaworkflows/elsa-server:3.9.0"
+        registry = correction_registry(prior, fragments, already_corrected=(corrected_ref,))
+        created = []
+        copied_sources = []
+
+        def create_tag(command, **_kwargs):
+            if command[:4] == ["docker", "buildx", "imagetools", "create"]:
+                target, source = command[5], command[6]
+                created.append(target)
+                copied_sources.append(source)
+                registry[target] = registry[source]
+            return None
+
+        promoted = self.promote(registry, prior, receipt, packages, fragments, create_tag)
+
+        self.assertEqual(len(promoted), 8)
+        self.assertEqual(len(created), 7)
+        self.assertNotIn(corrected_ref, created)
+        self.assertEqual(set(created), set(prior) - {corrected_ref})
+        self.assertTrue(all("@sha256:" in source for source in copied_sources))
+
+        created.clear()
+        retry = self.promote(registry, prior, receipt, packages, fragments, create_tag)
+        self.assertEqual(len(retry), 8)
+        self.assertEqual(created, [])
+
+    def test_drift_or_missing_tag_blocks_all_version_writes(self):
+        receipt, _run, _artifact, _archive, packages, prior, _supersedes = self.prior_publication()
+        fragments = correction_fragments()
+        affected_ref = "elsaworkflows/elsa-studio:3.9.0"
+
+        for state in ("drift", "missing"):
+            with self.subTest(state=state):
+                registry = correction_registry(prior, fragments)
+                if state == "drift":
+                    registry[affected_ref] = {
+                        "digest": "sha256:" + "f" * 64,
+                        "platforms": {"linux/amd64": "sha256:" + "e" * 64, "linux/arm64": "sha256:" + "d" * 64},
+                    }
+                else:
+                    del registry[affected_ref]
+                create_tag = Mock()
+                with self.assertRaises(release.ReleaseError):
+                    self.promote(
+                        registry,
+                        prior,
+                        receipt,
+                        packages,
+                        fragments,
+                        create_tag,
+                    )
+                self.assertFalse(
+                    any(call.args[0][:4] == ["docker", "buildx", "imagetools", "create"] for call in create_tag.call_args_list)
+                )
+
 
 def server_fragment():
     image = release.parse_image_selection("server")[0]
@@ -224,7 +712,16 @@ def server_fragment():
             "httpStatus": 200,
             "browserAssets": [],
             "identityLogin": {"status": 200, "endpoint": "/elsa/api/identity/login"},
-            "bearerApi": {"status": 200, "endpoint": "/elsa/api/workflow-definitions?page=0&pageSize=1"},
+            "bearerApi": {
+                "status": 200,
+                "endpoint": release.BEARER_API_ENDPOINT,
+                "contentType": "application/json; charset=utf-8",
+            },
+            "dashboardApi": {
+                "status": 200,
+                "endpoint": release.DASHBOARD_API_ENDPOINT,
+                "contentType": "application/json; charset=utf-8",
+            },
         }
         for platform, digest in PLATFORMS.items()
     ]
@@ -238,6 +735,47 @@ def server_fragment():
         "smoke": {"success": True, "imageDigest": ROOT_DIGEST, "platforms": smoke_platforms},
         "resolvedPackages": {
             "core": [{"id": "Elsa", "version": "3.9.0"}],
+            "extensions": [{"id": "Elsa.Logging", "version": "3.9.0"}],
+        },
+    }
+
+
+def standalone_fragment():
+    image = release.parse_image_selection("studio-wasm-standalone")[0]
+    assets = [
+        {
+            "path": path,
+            "status": 200,
+            "bytes": 775 if path.endswith(".css") else 500,
+            "contentType": "text/css; charset=utf-8" if path.endswith(".css") else "application/javascript",
+        }
+        for path in image["smokeAssets"]
+    ]
+    platforms = [
+        {"platform": platform, "digest": digest}
+        for platform, digest in PLATFORMS.items()
+    ]
+    smoke_platforms = [
+        {
+            "platform": platform,
+            "imageDigest": digest,
+            "status": "success",
+            "httpStatus": 200,
+            "browserAssets": assets,
+        }
+        for platform, digest in PLATFORMS.items()
+    ]
+    return {
+        "id": image["id"],
+        "name": image["name"],
+        "repository": image["repository"],
+        "sourceRef": f"{image['repository']}:3.9.0-sha-{COMMIT}",
+        "digest": ROOT_DIGEST,
+        "platforms": platforms,
+        "smoke": {"success": True, "imageDigest": ROOT_DIGEST, "platforms": smoke_platforms},
+        "resolvedPackages": {
+            "core": [{"id": "Elsa", "version": "3.9.0"}],
+            "studio": [{"id": "Elsa.Studio", "version": "3.9.0"}],
             "extensions": [{"id": "Elsa.Logging", "version": "3.9.0"}],
         },
     }
@@ -294,16 +832,16 @@ class ImageArtifactSelectionTests(unittest.TestCase):
 
 
 class FinalizeEvidenceRejectionTests(unittest.TestCase):
-    def run_finalize_with_fragment(self, fragment):
+    def run_finalize_with_fragment(self, fragment, profile="server"):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        artifact_dir = root / f"container-image-server-12345-1"
+        artifact_dir = root / f"container-image-{profile}-12345-1"
         artifact_dir.mkdir()
-        (artifact_dir / "server.json").write_text(json.dumps(fragment), encoding="utf-8")
+        (artifact_dir / f"{profile}.json").write_text(json.dumps(fragment), encoding="utf-8")
         command = [
             "finalize", "--publication", "published", "--version", "3.9.0",
-            "--commit", COMMIT, "--source-ref", "refs/heads/main", "--images", "server",
+            "--commit", COMMIT, "--source-ref", "refs/heads/main", "--images", profile,
             "--core-version", "3.9.0", "--studio-version", "3.9.0", "--extensions-version", "3.9.0",
             "--event", "workflow_dispatch", "--repository", "elsa-workflows/elsa-apps",
             "--run-id", "12345", "--run-attempt", "2", "--expected-commit", COMMIT,
@@ -327,6 +865,23 @@ class FinalizeEvidenceRejectionTests(unittest.TestCase):
         fragment = server_fragment()
         fragment["resolvedPackages"]["core"][0]["version"] = "3.8.4"
         self.run_finalize_with_fragment(fragment)
+
+    def test_dashboard_html_fallback_is_rejected_before_any_tag_creation(self):
+        fragment = server_fragment()
+        fragment["smoke"]["platforms"][0]["dashboardApi"]["contentType"] = "text/html"
+        self.run_finalize_with_fragment(fragment)
+
+    def test_missing_standalone_stylesheet_is_rejected_before_any_tag_creation(self):
+        fragment = standalone_fragment()
+        for row in fragment["smoke"]["platforms"]:
+            row["browserAssets"] = [asset for asset in row["browserAssets"] if not asset["path"].endswith(".css")]
+        self.run_finalize_with_fragment(fragment, "studio-wasm-standalone")
+
+    def test_empty_standalone_stylesheet_is_rejected_before_any_tag_creation(self):
+        fragment = standalone_fragment()
+        for row in fragment["smoke"]["platforms"]:
+            next(asset for asset in row["browserAssets"] if asset["path"].endswith(".css"))["bytes"] = 99
+        self.run_finalize_with_fragment(fragment, "studio-wasm-standalone")
 
     def test_receipt_records_selected_earlier_evidence_attempt(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -389,6 +944,22 @@ class BrowserAssetSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseError, "HTML fallback page"):
                 release.verify_smoke_assets("http://127.0.0.1:1234", ["/_framework/dotnet.js"])
 
+    def test_verifies_standalone_stylesheet_content_type(self):
+        css = self.Response(b".studio { color: #fff; }".ljust(100, b" "), "text/css; charset=utf-8")
+        with patch.object(release.urllib.request, "urlopen", return_value=css):
+            verified = release.verify_smoke_assets(
+                "http://127.0.0.1:1234", ["/Elsa.Studio.BlazorWasm.Client.styles.css"]
+            )
+        self.assertEqual(verified[0]["contentType"], "text/css; charset=utf-8")
+
+    def test_rejects_empty_stylesheet(self):
+        css = self.Response(b"", "text/css; charset=utf-8")
+        with patch.object(release.urllib.request, "urlopen", return_value=css):
+            with self.assertRaisesRegex(release.ReleaseError, "only 0 bytes"):
+                release.verify_smoke_assets(
+                    "http://127.0.0.1:1234", ["/Elsa.Studio.BlazorWasm.Client.styles.css"]
+                )
+
 
 class AuthenticatedApiSmokeTests(unittest.TestCase):
     class Response:
@@ -410,11 +981,12 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
     def test_uses_bearer_protected_workflow_definitions_api_and_validates_paged_json(self):
         login = self.Response(b'{"accessToken":"synthetic-token"}')
         definitions = self.Response(b'{"items":[],"totalCount":0}')
+        dashboard = self.Response(b'{"runtime":{},"workflowInstances":{}}')
         requests = []
 
         def open_url(request, timeout):
             requests.append(request)
-            return (login, definitions)[len(requests) - 1]
+            return (login, definitions, dashboard)[len(requests) - 1]
 
         with patch.object(release.urllib.request, "urlopen", side_effect=open_url):
             result = release.login_and_probe_api("http://127.0.0.1:1234/", "smoke", "secret")
@@ -427,7 +999,13 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
         )
         self.assertEqual(requests[1].get_method(), "GET")
         self.assertEqual(requests[1].get_header("Authorization"), "Bearer synthetic-token")
+        self.assertEqual(
+            requests[2].full_url,
+            "http://127.0.0.1:1234/elsa/api/dashboard/overview?range=24h&includeSystem=false",
+        )
+        self.assertEqual(requests[2].get_header("Authorization"), "Bearer synthetic-token")
         self.assertEqual(result["bearerApi"]["status"], 200)
+        self.assertEqual(result["dashboardApi"]["status"], 200)
 
     def test_rejects_html_fallback_even_when_it_returns_http_200(self):
         login = self.Response(b'{"accessToken":"synthetic-token"}')
@@ -443,6 +1021,22 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
             with self.assertRaisesRegex(release.ReleaseError, "paged JSON response"):
                 release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
 
+    def test_rejects_dashboard_html_fallback_even_when_it_returns_http_200(self):
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        definitions = self.Response(b'{"items":[],"totalCount":0}')
+        fallback = self.Response(b'<!doctype html><html>Studio</html>', "text/html; charset=utf-8")
+        with patch.object(release.urllib.request, "urlopen", side_effect=[login, definitions, fallback]):
+            with self.assertRaisesRegex(release.ReleaseError, "dashboard/overview.*invalid JSON"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
+    def test_rejects_dashboard_json_without_dashboard_overview_shape(self):
+        login = self.Response(b'{"accessToken":"synthetic-token"}')
+        definitions = self.Response(b'{"items":[],"totalCount":0}')
+        invalid = self.Response(b'{"message":"not the dashboard overview"}')
+        with patch.object(release.urllib.request, "urlopen", side_effect=[login, definitions, invalid]):
+            with self.assertRaisesRegex(release.ReleaseError, "dashboard/overview.*unexpected JSON object"):
+                release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
+
     def test_login_and_api_timeouts_name_the_failed_endpoint(self):
         with patch.object(release.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
             with self.assertRaisesRegex(release.ReleaseError, "identity/login failed"):
@@ -450,7 +1044,7 @@ class AuthenticatedApiSmokeTests(unittest.TestCase):
 
         login = self.Response(b'{"accessToken":"synthetic-token"}')
         with patch.object(release.urllib.request, "urlopen", side_effect=[login, TimeoutError("timed out")]):
-            with self.assertRaisesRegex(release.ReleaseError, "workflow definitions API request.*failed"):
+            with self.assertRaisesRegex(release.ReleaseError, "workflow-definitions.*failed"):
                 release.login_and_probe_api("http://127.0.0.1:1234", "smoke", "secret")
 
     def test_asset_timeout_names_the_failed_asset(self):

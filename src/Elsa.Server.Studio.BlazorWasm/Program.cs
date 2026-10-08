@@ -26,6 +26,7 @@ services
         .UseLiquid()
         .UseHttp(http => http.ConfigureHttpOptions = options => configuration.GetSection("Http").Bind(options))
         .UseWorkflowsApi()
+        .UseDashboardApi()
         .UseAgentActivities()
         .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCoreForAgents(ef, configuration)))
         .UseAgentsApi()

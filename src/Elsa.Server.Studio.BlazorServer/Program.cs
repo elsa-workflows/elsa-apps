@@ -46,6 +46,7 @@ services
         .UseLiquid()
         .UseHttp(http => http.ConfigureHttpOptions = options => configuration.GetSection("Http").Bind(options))
         .UseWorkflowsApi()
+        .UseDashboardApi()
         .UseLoggingFramework()
         .UseAgentActivities()
         .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ConfigureEntityFrameworkCoreForAgents(ef, configuration)))
@@ -85,7 +86,7 @@ services.AddCore();
 services.AddShell();
 services.AddRemoteBackend(backendApiConfig);
 services.AddLoginModule().UseElsaIdentity();
-services.AddDashboardModule();
+services.AddDashboardModule(backendApiConfig);
 services.AddWorkflowsModule();
 services.AddWebhooksModule();
 services.AddAgentsModule(backendApiConfig);
