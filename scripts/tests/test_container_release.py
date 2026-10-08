@@ -84,6 +84,26 @@ class VersionAndSelectionTests(unittest.TestCase):
 
 
 class ManifestPromotionTests(unittest.TestCase):
+    def test_same_commit_published_from_main_is_reusable_from_matching_release_tag(self):
+        package_versions = dict.fromkeys(("core", "studio", "extensions"), "3.9.0")
+        original_labels = release.labels_for("3.9.0", COMMIT, "refs/heads/main", package_versions)
+        manifest = {"digest": ROOT_DIGEST, "platforms": PLATFORMS}
+        with (
+            patch.object(release, "inspect_manifest", return_value=manifest),
+            patch.object(release, "run_command", return_value=Mock(stdout=json.dumps(original_labels))),
+        ):
+            plan = release.get_image_plan_with_packages(
+                "elsaworkflows/elsa-server-app", "3.9.0", COMMIT, "refs/tags/3.9.0", package_versions
+            )
+            self.assertTrue(plan["reuse"])
+            self.assertEqual(plan["source_ref"], "elsaworkflows/elsa-server-app:3.9.0")
+            original_labels["org.opencontainers.image.ref.name"] = "refs/heads/unreviewed"
+            with patch.object(release, "run_command", return_value=Mock(stdout=json.dumps(original_labels))):
+                with self.assertRaisesRegex(release.ReleaseError, "unapproved publication ref"):
+                    release.get_image_plan_with_packages(
+                        "elsaworkflows/elsa-server-app", "3.9.0", COMMIT, "refs/tags/3.9.0", package_versions
+                    )
+
     def test_manifest_requires_exact_supported_platforms(self):
         with patch.object(release, "inspect_manifest", return_value={"digest": ROOT_DIGEST, "platforms": {**PLATFORMS, "linux/arm/v7": "sha256:" + "d" * 64}}):
             with self.assertRaisesRegex(release.ReleaseError, "unsupported platforms"):

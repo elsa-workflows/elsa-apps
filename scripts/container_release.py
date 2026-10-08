@@ -405,6 +405,11 @@ def verify_labels(reference: str, expected: dict[str, str], platforms: Iterable[
         except json.JSONDecodeError as error:
             raise ReleaseError(f"Could not read image labels from {reference}: {error}") from error
         for key, value in expected.items():
+            if key == "org.opencontainers.image.ref.name":
+                allowed_refs = {"refs/heads/main", f"refs/tags/{expected['org.opencontainers.image.version']}"}
+                if actual.get(key) not in allowed_refs:
+                    raise ReleaseError(f"{reference} has an unapproved publication ref label: {actual.get(key)!r}")
+                continue
             if actual.get(key) != value:
                 raise ReleaseError(
                     f"{reference} label {key!r} is {actual.get(key)!r}; expected {value!r}"
