@@ -1358,7 +1358,7 @@ def load_superseded_publication(
     run_repository = (run.get("repository") or {}).get("full_name")
     old_commit = str(run.get("head_sha", ""))
     attempt = run.get("run_attempt")
-    prior_source_ref = prior_publication_source_ref(run, version)
+    prior_publication_source_ref(run, version)
     if (
         str(run.get("id", "")) != run_id
         or run.get("status") != "completed"
