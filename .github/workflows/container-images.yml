@@ -40,6 +40,11 @@ on:
         type: string
         required: false
         default: ''
+      supersede_run_id:
+        description: Prior successful full publication run to explicitly correct (advanced recovery only)
+        type: string
+        required: false
+        default: ''
   release:
     types:
       - published
@@ -63,6 +68,7 @@ jobs:
       core_version: ${{ steps.release.outputs.core_version }}
       studio_version: ${{ steps.release.outputs.studio_version }}
       extensions_version: ${{ steps.release.outputs.extensions_version }}
+      supersede_run_id: ${{ steps.release.outputs.supersede_run_id }}
       images: ${{ steps.release.outputs.images }}
       matrix: ${{ steps.release.outputs.matrix }}
     steps:
@@ -85,6 +91,7 @@ jobs:
           STUDIO_VERSION: ${{ inputs.studio_version || '' }}
           EXTENSIONS_VERSION: ${{ inputs.extensions_version || '' }}
           EXPECTED_COMMIT: ${{ inputs.expected_commit || '' }}
+          SUPERSEDE_RUN_ID: ${{ inputs.supersede_run_id || '' }}
         run: |
           python3 scripts/container_release.py validate-run \
             --event "$GITHUB_EVENT_NAME" \
@@ -95,9 +102,19 @@ jobs:
             --studio-version "$STUDIO_VERSION" \
             --extensions-version "$EXTENSIONS_VERSION" \
             --expected-commit "$EXPECTED_COMMIT" \
+            --supersede-run-id "$SUPERSEDE_RUN_ID" \
             --release-tag "$RELEASE_EVENT_TAG" \
             --ref "$GITHUB_REF" \
             --commit "$GITHUB_SHA"
+
+      - name: Require correction source to be in main history
+        if: inputs.supersede_run_id != ''
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
+            echo "A correction must use a source commit already included in main." >&2
+            exit 1
+          }
 
       - name: Require published tag to be present in main history
         if: steps.release.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/')
@@ -148,7 +165,12 @@ jobs:
           CORE_VERSION: ${{ needs.prepare.outputs.core_version }}
           STUDIO_VERSION: ${{ needs.prepare.outputs.studio_version }}
           EXTENSIONS_VERSION: ${{ needs.prepare.outputs.extensions_version }}
+          SUPERSEDE_RUN_ID: ${{ needs.prepare.outputs.supersede_run_id }}
         run: |
+          PLAN_OPTIONS=()
+          if [[ -n "$SUPERSEDE_RUN_ID" ]]; then
+            PLAN_OPTIONS+=(--skip-version-tag)
+          fi
           python3 scripts/container_release.py plan-image \
             --repository "$IMAGE_REPOSITORY" \
             --version "$RELEASE_VERSION" \
@@ -156,7 +178,8 @@ jobs:
             --source-ref "$SOURCE_REF" \
             --core-version "$CORE_VERSION" \
             --studio-version "$STUDIO_VERSION" \
-            --extensions-version "$EXTENSIONS_VERSION"
+            --extensions-version "$EXTENSIONS_VERSION" \
+            "${PLAN_OPTIONS[@]}"
 
       - name: Build and push immutable source tag
         if: needs.prepare.outputs.publish == 'true' && steps.plan.outputs.reuse != 'true'
@@ -270,6 +293,9 @@ jobs:
 
   finalize:
     name: Publish version tags and write receipt
+    permissions:
+      actions: read
+      contents: read
     needs:
       - prepare
       - build-and-smoke
@@ -279,6 +305,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.source_commit }}
+          fetch-depth: 0
+
+      - name: Fetch main for correction ancestry validation
+        if: needs.prepare.outputs.supersede_run_id != ''
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
 
       - name: Download image evidence
         uses: actions/download-artifact@v4
@@ -315,10 +346,12 @@ jobs:
           INPUT_CORE_VERSION: ${{ inputs.core_version || '' }}
           INPUT_STUDIO_VERSION: ${{ inputs.studio_version || '' }}
           INPUT_EXTENSIONS_VERSION: ${{ inputs.extensions_version || '' }}
+          SUPERSEDE_RUN_ID: ${{ needs.prepare.outputs.supersede_run_id }}
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/container_release.py finalize \
             --publication "$PUBLICATION" \
@@ -338,6 +371,7 @@ jobs:
             --input-core-version "$INPUT_CORE_VERSION" \
             --input-studio-version "$INPUT_STUDIO_VERSION" \
             --input-extensions-version "$INPUT_EXTENSIONS_VERSION" \
+            --supersede-run-id "$SUPERSEDE_RUN_ID" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --artifact-dir artifacts/image-evidence \

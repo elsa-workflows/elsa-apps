@@ -1,7 +1,10 @@
 import argparse
+import hashlib
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -33,6 +36,149 @@ def args(**overrides):
     }
     values.update(overrides)
     return argparse.Namespace(**values)
+
+
+def correction_fixture():
+    version = "3.9.0"
+    prior_commit = "2" * 40
+    run_id = "424242"
+    attempt = 2
+    package_versions = {family: version for family in ("core", "studio", "extensions")}
+    platforms = {
+        "linux/amd64": "sha256:" + "a" * 64,
+        "linux/arm64": "sha256:" + "b" * 64,
+    }
+    receipt_images = []
+    for index, image in enumerate(release.IMAGES):
+        digest = "sha256:" + format(index + 4, "x") * 64
+        entry = {
+            "name": image["name"],
+            "repository": image["repository"],
+            "tag": version,
+            "sourceRef": f"{image['repository']}:{version}-sha-{prior_commit}",
+            "digest": digest,
+            "platforms": [
+                {"platform": platform, "digest": platform_digest}
+                for platform, platform_digest in platforms.items()
+            ],
+            "registryVerified": True,
+            "smoke": {"success": True},
+            "packages": image["packages"],
+            "packageVersions": {family: version for family in image["packages"]},
+            "resolvedPackages": {},
+        }
+        receipt_images.append(entry)
+    for image in release.IMAGES:
+        canonical = next(entry for entry in receipt_images if entry["name"] == image["name"])
+        for alias in image.get("aliases", []):
+            receipt_images.append({
+                **canonical,
+                "name": alias["name"],
+                "repository": alias["repository"],
+                "alias_of": image["name"],
+            })
+
+    receipt = {
+        "schemaVersion": 1,
+        "releaseVersion": version,
+        "appsRepository": release.APPS_REPOSITORY,
+        "appsSource": {"ref": "refs/heads/main", "commit": prior_commit},
+        "appsSourceCommit": prior_commit,
+        "workflowRun": {
+            "repository": release.APPS_REPOSITORY,
+            "id": run_id,
+            "runAttempt": attempt,
+            "workflow": ".github/workflows/container-images.yml",
+            "url": f"https://github.com/{release.APPS_REPOSITORY}/actions/runs/{run_id}",
+            "event": "workflow_dispatch",
+            "ref": "refs/heads/main",
+            "headSha": prior_commit,
+            "conclusion": "success",
+        },
+        "packageVersions": package_versions,
+        "workflowInputs": {
+            "version": version,
+            "publish": True,
+            "images": "all",
+            "core_version": version,
+            "studio_version": version,
+            "extensions_version": version,
+            "expected_commit": prior_commit,
+        },
+        "publication": "published",
+        "images": receipt_images,
+    }
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zipped:
+        zipped.writestr("container-release-receipt.json", json.dumps(receipt))
+    archive = buffer.getvalue()
+    run = {
+        "id": int(run_id),
+        "status": "completed",
+        "conclusion": "success",
+        "event": "workflow_dispatch",
+        "path": ".github/workflows/container-images.yml@refs/heads/main",
+        "html_url": f"https://github.com/{release.APPS_REPOSITORY}/actions/runs/{run_id}",
+        "head_branch": "main",
+        "head_repository": {"full_name": release.APPS_REPOSITORY},
+        "repository": {"full_name": release.APPS_REPOSITORY},
+        "head_sha": prior_commit,
+        "run_attempt": attempt,
+    }
+    artifact = {
+        "id": 812345,
+        "name": f"container-release-receipt-{version}-{run_id}-{attempt}",
+        "expired": False,
+        "size_in_bytes": len(archive),
+        "digest": "sha256:" + hashlib.sha256(archive).hexdigest(),
+        "workflow_run": {"id": int(run_id), "head_sha": prior_commit, "head_branch": "main"},
+    }
+    return receipt, run, artifact, archive, package_versions
+
+
+def correction_fragments():
+    version = "3.9.0"
+    commit = "3" * 40
+    platforms = {
+        "linux/amd64": "sha256:" + "c" * 64,
+        "linux/arm64": "sha256:" + "d" * 64,
+    }
+    fragments = []
+    for index, image in enumerate(release.IMAGES):
+        fragments.append({
+            "id": image["id"],
+            "name": image["name"],
+            "repository": image["repository"],
+            "sourceRef": f"{image['repository']}:{version}-sha-{commit}",
+            "digest": "sha256:" + format(index + 10, "x") * 64,
+            "platforms": [
+                {"platform": platform, "digest": digest}
+                for platform, digest in platforms.items()
+            ],
+            "smoke": {"success": True},
+            "resolvedPackages": {},
+        })
+    return fragments
+
+
+def correction_registry(prior_by_reference, fragments, already_corrected=()):
+    version = "3.9.0"
+    registry = {}
+    new_refs = {}
+    for image, fragment in zip(release.IMAGES, fragments):
+        manifest = {
+            "digest": fragment["digest"],
+            "platforms": {item["platform"]: item["digest"] for item in fragment["platforms"]},
+        }
+        registry[f"{image['repository']}@{fragment['digest']}"] = manifest
+        new_refs[f"{image['repository']}:{version}"] = manifest
+        for alias in image.get("aliases", []):
+            new_refs[f"{alias['repository']}:{version}"] = manifest
+    for reference, prior in prior_by_reference.items():
+        registry[reference] = {"digest": prior["digest"], "platforms": prior["platforms"]}
+    for reference in already_corrected:
+        registry[reference] = new_refs[reference]
+    return registry
 
 
 class VersionAndSelectionTests(unittest.TestCase):
@@ -82,6 +228,25 @@ class VersionAndSelectionTests(unittest.TestCase):
     def test_dispatch_does_not_allow_pr_publication(self):
         with self.assertRaisesRegex(release.ReleaseError, "Pull requests cannot publish"):
             release.validate_publication("pull_request", "3.9.0", True, "refs/pull/42/merge")
+
+    def test_supersede_is_full_version_published_main_dispatch_only(self):
+        packages = {family: "3.9.0" for family in ("core", "studio", "extensions")}
+        release.validate_supersede_request(
+            "424242", "workflow_dispatch", "3.9.0", True, "refs/heads/main", list(release.IMAGES), packages
+        )
+        cases = (
+            ("pull_request", True, "refs/heads/main", list(release.IMAGES), packages),
+            ("workflow_dispatch", False, "refs/heads/main", list(release.IMAGES), packages),
+            ("workflow_dispatch", True, "refs/heads/release", list(release.IMAGES), packages),
+            ("workflow_dispatch", True, "refs/heads/main", list(release.IMAGES[:1]), packages),
+            ("workflow_dispatch", True, "refs/heads/main", list(release.IMAGES), {**packages, "studio": "3.8.4"}),
+        )
+        for event, publish, ref, images, package_versions in cases:
+            with self.subTest(event=event, publish=publish, ref=ref):
+                with self.assertRaises(release.ReleaseError):
+                    release.validate_supersede_request(
+                        "424242", event, "3.9.0", publish, ref, images, package_versions
+                    )
 
 
 class ManifestPromotionTests(unittest.TestCase):
@@ -207,6 +372,180 @@ class ManifestPromotionTests(unittest.TestCase):
                         )
                 self.assertFalse(
                     any(command[:4] == ["docker", "buildx", "imagetools", "create"] for command in commands)
+                )
+
+    def test_correction_plan_ignores_the_existing_version_tag(self):
+        image = release.parse_image_selection("server")[0]
+        candidate_ref = f"{image['repository']}:3.9.0-sha-{COMMIT}"
+        manifest = {"digest": ROOT_DIGEST, "platforms": PLATFORMS}
+        with (
+            patch.object(release, "inspect_manifest", return_value=manifest) as inspect,
+            patch.object(release, "verify_labels"),
+        ):
+            plan = release.get_image_plan_with_packages(
+                image["repository"],
+                "3.9.0",
+                COMMIT,
+                "refs/heads/main",
+                {family: "3.9.0" for family in ("core", "studio", "extensions")},
+                skip_version_tag=True,
+            )
+        self.assertEqual(plan["source_ref"], candidate_ref)
+        self.assertTrue(plan["reuse"])
+        self.assertEqual([call.args[0] for call in inspect.call_args_list], [candidate_ref, candidate_ref])
+
+
+class SupersededPublicationTests(unittest.TestCase):
+    def promote(self, registry, prior, receipt, packages, fragments, run_command):
+        with (
+            patch.object(release, "inspect_manifest", side_effect=registry.get),
+            patch.object(release, "verify_labels"),
+            patch.object(release, "run_command", side_effect=run_command),
+        ):
+            return release.run_docker_promotion(
+                fragments,
+                list(release.IMAGES),
+                "3.9.0",
+                "3" * 40,
+                "refs/heads/main",
+                packages,
+                prior_by_reference=prior,
+                prior_commit=receipt["appsSourceCommit"],
+                prior_source_ref=receipt["appsSource"]["ref"],
+                prior_package_versions=receipt["packageVersions"],
+            )
+
+    def prior_publication(self):
+        receipt, run, artifact, archive, package_versions = correction_fixture()
+        _receipt, references, supersedes = release.validate_superseded_archive(
+            archive,
+            artifact,
+            expected_name=artifact["name"],
+            run=run,
+            version="3.9.0",
+            package_versions=package_versions,
+            repository=release.APPS_REPOSITORY,
+        )
+        return receipt, run, artifact, archive, package_versions, references, supersedes
+
+    def test_verified_artifact_has_exact_receipt_member_and_all_eight_refs(self):
+        _receipt, _run, artifact, _archive, _packages, references, supersedes = self.prior_publication()
+        self.assertEqual(len(references), 8)
+        self.assertEqual(len(supersedes["references"]), 8)
+        self.assertEqual(supersedes["receiptArtifact"]["id"], artifact["id"])
+        self.assertEqual(supersedes["receiptArtifact"]["archiveDigest"], artifact["digest"])
+
+    def test_rejects_tampered_digest_and_extra_archive_members(self):
+        _receipt, run, artifact, archive, packages = correction_fixture()
+        with self.assertRaisesRegex(release.ReleaseError, "does not match GitHub artifact metadata"):
+            release.validate_superseded_archive(
+                archive + b"tampered",
+                artifact,
+                expected_name=artifact["name"],
+                run=run,
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+            )
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as zipped:
+            zipped.writestr("container-release-receipt.json", json.dumps(_receipt))
+            zipped.writestr("unexpected.json", "{}")
+        extra_archive = buffer.getvalue()
+        artifact["digest"] = "sha256:" + hashlib.sha256(extra_archive).hexdigest()
+        with self.assertRaisesRegex(release.ReleaseError, "only container-release-receipt.json"):
+            release.validate_superseded_archive(
+                extra_archive,
+                artifact,
+                expected_name=artifact["name"],
+                run=run,
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+            )
+
+    def test_loader_checks_canonical_successful_run_and_downloads_exact_artifact(self):
+        _receipt, run, artifact, archive, packages = correction_fixture()
+        current_commit = "3" * 40
+        with (
+            patch.object(release, "github_api_json", side_effect=[run, {"total_count": 1, "artifacts": [artifact]}]) as api,
+            patch.object(release, "github_api_artifact_zip", return_value=archive) as download,
+            patch.object(release.subprocess, "run", return_value=Mock(returncode=0)),
+        ):
+            _loaded, references, supersedes = release.load_superseded_publication(
+                "424242",
+                version="3.9.0",
+                package_versions=packages,
+                repository=release.APPS_REPOSITORY,
+                current_run_id="777777",
+                current_commit=current_commit,
+            )
+        self.assertEqual(len(references), 8)
+        self.assertEqual(supersedes["appsSourceCommit"], run["head_sha"])
+        self.assertEqual(api.call_args_list[0].args[0], "repos/elsa-workflows/elsa-apps/actions/runs/424242")
+        self.assertEqual(
+            api.call_args_list[1].args[0],
+            "repos/elsa-workflows/elsa-apps/actions/runs/424242/artifacts?per_page=100",
+        )
+        download.assert_called_once_with("repos/elsa-workflows/elsa-apps/actions/artifacts/812345/zip")
+
+    def test_correction_retry_promotes_prior_refs_and_leaves_latest_tags_out(self):
+        receipt, _run, _artifact, _archive, packages, prior, _supersedes = self.prior_publication()
+        fragments = correction_fragments()
+        corrected_ref = "elsaworkflows/elsa-server:3.9.0"
+        registry = correction_registry(prior, fragments, already_corrected=(corrected_ref,))
+        created = []
+        copied_sources = []
+
+        def create_tag(command, **_kwargs):
+            if command[:4] == ["docker", "buildx", "imagetools", "create"]:
+                target, source = command[5], command[6]
+                created.append(target)
+                copied_sources.append(source)
+                registry[target] = registry[source]
+            return None
+
+        promoted = self.promote(registry, prior, receipt, packages, fragments, create_tag)
+
+        self.assertEqual(len(promoted), 8)
+        self.assertEqual(len(created), 7)
+        self.assertNotIn(corrected_ref, created)
+        self.assertEqual(set(created), set(prior) - {corrected_ref})
+        self.assertTrue(all("@sha256:" in source for source in copied_sources))
+
+        created.clear()
+        retry = self.promote(registry, prior, receipt, packages, fragments, create_tag)
+        self.assertEqual(len(retry), 8)
+        self.assertEqual(created, [])
+
+    def test_drift_or_missing_tag_blocks_all_version_writes(self):
+        receipt, _run, _artifact, _archive, packages, prior, _supersedes = self.prior_publication()
+        fragments = correction_fragments()
+        affected_ref = "elsaworkflows/elsa-studio:3.9.0"
+
+        for state in ("drift", "missing"):
+            with self.subTest(state=state):
+                registry = correction_registry(prior, fragments)
+                if state == "drift":
+                    registry[affected_ref] = {
+                        "digest": "sha256:" + "f" * 64,
+                        "platforms": {"linux/amd64": "sha256:" + "e" * 64, "linux/arm64": "sha256:" + "d" * 64},
+                    }
+                else:
+                    del registry[affected_ref]
+                create_tag = Mock()
+                with self.assertRaises(release.ReleaseError):
+                    self.promote(
+                        registry,
+                        prior,
+                        receipt,
+                        packages,
+                        fragments,
+                        create_tag,
+                    )
+                self.assertFalse(
+                    any(call.args[0][:4] == ["docker", "buildx", "imagetools", "create"] for call in create_tag.call_args_list)
                 )
 
 
