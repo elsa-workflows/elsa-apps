@@ -107,7 +107,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseWorkflowsApi();
 app.UseWorkflows();
-app.MapStaticAssets();
 app.MapRazorPages();
 app.MapBlazorHub();
 app.MapFallbackToPage("/_Host");

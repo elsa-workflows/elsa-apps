@@ -1,4 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+    <PropertyGroup>
+        <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
+    </PropertyGroup>
     <ItemGroup>
         <PackageReference Include="Elsa.Studio" />
         <PackageReference Include="Elsa.Studio.Agents" />

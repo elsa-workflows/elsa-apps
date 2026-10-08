@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+    <PropertyGroup>
+        <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
+    </PropertyGroup>
+
     <ItemGroup>
         <PackageReference Include="Elsa"/>
         <PackageReference Include="Elsa.Expressions.CSharp"/>
